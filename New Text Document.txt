@@ -1,0 +1,10 @@
+chuyển thời điểm hoàn thành theo thực tế về 0
+tính giờ theo diện tích hình thang
+thêm cột Dừng lệnh vào DF khi import
+đã overlap true failse, cắt đuôi nhưng đoạn công suất thừa ở những trường hợp failse
+nối những điểm giữa 2 lệnh cố định + bỏ đoạn trống sau khi bị cắt đuôi
+chỉnh lệch phải theo giờ (2h=1h-2h)
+thêm EPC
+thay tất cả các case thành duy nhất 1 trường hợp đè chổ nào thì cắt lệnh chổ đó
+
+pyinstaller --onefile .\main.py --icon=DIM.ico --exclude-module PyQt5
