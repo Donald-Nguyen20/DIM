@@ -199,7 +199,8 @@ class CalculationTab(QWidget):
         df2_ct = getattr(self.main_window_ref, "DF2_CT", None) if self.main_window_ref else None
         s1_view = self._merge_hour_with_contract(s1_hour, df1_ct) #df sau khi ghép
         s2_view = self._merge_hour_with_contract(s2_hour, df2_ct)
-
+        self.main_window_ref.DF1_dashboard = s1_view
+        self.main_window_ref.DF2_dashboard = s2_view
         self.table_hour_s1.setModel(self._df_to_model(s1_view))
         self.table_hour_s2.setModel(self._df_to_model(s2_view))
         self.table_hour_s1.resizeColumnsToContents()

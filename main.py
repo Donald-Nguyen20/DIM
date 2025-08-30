@@ -53,6 +53,26 @@ if __name__ == "__main__":
             padding: 4px;
             border: 1px solid #B5C99A;
         }
+                      QTabBar::tab {
+    background: #DAD7CD;   /* tab chưa chọn */
+    color: #344E41;
+    padding: 8px 16px;
+    border: 1px solid #A3B18A;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background: #8B5E3C;   /* tab chọn: cacao/socola nhạt */
+    color: white;
+    font-weight: bold;
+}
+
+QTabBar::tab:hover {
+    background: #B5C99A;   /* hover olive nhạt để cân bằng */
+}
+
     """)
 
     w = MainTabWindow()
