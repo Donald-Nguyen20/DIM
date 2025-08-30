@@ -14,6 +14,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Dashboard S1 / S2 – Draw DF1/DF2")
         self.DF1 = pd.DataFrame()
         self.DF2 = pd.DataFrame()
+        self.DF1_CT = pd.DataFrame()   # NEW: Sub-Contract S1
+        self.DF2_CT = pd.DataFrame()   # NEW: Sub-Contract S2
 
         # Layout chính
         root = QWidget()
@@ -24,6 +26,12 @@ class MainWindow(QMainWindow):
         self.btn_import = QPushButton("Import file…")
         self.btn_import.clicked.connect(self.import_file)
         row_top.addWidget(self.btn_import)
+
+        # NEW: Nút Import Sub Ct
+        self.btn_import_subct = QPushButton("Import Sub Ct")
+        self.btn_import_subct.clicked.connect(self.import_sub_contract)
+        row_top.addWidget(self.btn_import_subct)
+
         row_top.addStretch()
         root_layout.addLayout(row_top)
 
@@ -122,8 +130,6 @@ class MainWindow(QMainWindow):
             stop_vals = pd.concat([pd.Series([None], dtype=object), stop_vals], ignore_index=True)
 
             # ======= XỬ LÝ CỘT CASE TƯƠNG TỰ CỘT THỜI ĐIỂM =======
-            # Ưu tiên: nếu có cặp cột riêng cho Case (BĐTH / hoàn thành) thì interleave trực tiếp.
-            # Ngược lại: nếu chỉ có một cột "Case" thì lặp đôi và chèn None ở các vị trí "hoàn thành".
             if {"Case BĐTH", "Case hoàn thành"}.issubset(set(dfi.columns)):
                 case_series = interleave_cols(dfi, "Case BĐTH", "Case hoàn thành")
             elif "Case" in dfi.columns:
@@ -134,13 +140,11 @@ class MainWindow(QMainWindow):
                 # không có thông tin Case
                 case_series = pd.Series([None] * (len(dfi) * 2), dtype=object)
 
-            # ================================================
-
             # Căn hàng: bỏ phần tử đầu của thời điểm, bỏ phần tử cuối của MW
             t = t[1:].reset_index(drop=True)
             mw = mw[:-1].reset_index(drop=True)
 
-            # Cắt/khớp độ dài stop_vals & case_series theo thời điểm (an toàn hơn so với [-1])
+            # Cắt/khớp độ dài stop_vals & case_series theo thời điểm
             stop_vals = stop_vals.iloc[:len(t)].reset_index(drop=True)
             case_out  = case_series[1:].reset_index(drop=True)  # bỏ phần tử đầu để song song với t
             case_out  = case_out.iloc[:len(t)].reset_index(drop=True)
@@ -151,8 +155,6 @@ class MainWindow(QMainWindow):
                 "Case": case_out,
                 "Dừng lệnh": stop_vals
             })
-
-
 
         self.DF1 = make_df(df_s1)
         self.DF2 = make_df(df_s2)
@@ -168,3 +170,49 @@ class MainWindow(QMainWindow):
         self.lbl_s2.setText(f"{len(df_s2)} dòng, {len(df_s2.columns)} cột")
         self.view_s1.resizeColumnsToContents()
         self.view_s2.resizeColumnsToContents()
+
+    # NEW: Import Sub-Contract (Sheet1=S1 → DF1_CT, Sheet2=S2 → DF2_CT)
+    def import_sub_contract(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Chọn file Sub-Contract", "",
+            "Excel files (*.xlsx *.xls *.xlsb);;All files (*.*)"
+        )
+        if not path:
+            return
+
+        try:
+            # Sheet1 (index 0) -> S1
+            df1 = pd.read_excel(path, sheet_name=0, usecols=[0, 1])
+            df1.columns = ["Time", "Output Power"]
+            df1["Time"] = pd.to_datetime(df1["Time"], errors="coerce", dayfirst=True)
+            df1["Output Power"] = pd.to_numeric(df1["Output Power"], errors="coerce")
+
+            # Sheet2 (index 1) -> S2
+            df2 = pd.read_excel(path, sheet_name=1, usecols=[0, 1])
+            df2.columns = ["Time", "Output Power"]
+            df2["Time"] = pd.to_datetime(df2["Time"], errors="coerce", dayfirst=True)
+            df2["Output Power"] = pd.to_numeric(df2["Output Power"], errors="coerce")
+
+            # Lưu vào thuộc tính
+            self.DF1_CT = df1.dropna(subset=["Time", "Output Power"]).reset_index(drop=True)
+            self.DF2_CT = df2.dropna(subset=["Time", "Output Power"]).reset_index(drop=True)
+
+            # Log nhanh
+            print("\n===== DF1_CT (S1 – Sub Ct) =====")
+            print(self.DF1_CT.head())
+            print("\n===== DF2_CT (S2 – Sub Ct) =====")
+            print(self.DF2_CT.head())
+
+            # (Tùy chọn) Hiển thị lên view riêng nếu anh có model/view cho Sub Ct
+            # self.model_s1_ct.setDataFrame(self.DF1_CT)
+            # self.model_s2_ct.setDataFrame(self.DF2_CT)
+            # self.view_s1_ct.resizeColumnsToContents()
+            # self.view_s2_ct.resizeColumnsToContents()
+
+            # (Tùy chọn) Thông báo
+            QMessageBox.information(self, "Import Sub-Contract",
+                                    f"Đã import thành công:\nS1: {len(self.DF1_CT)} dòng\nS2: {len(self.DF2_CT)} dòng")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi import Sub-Contract", str(e))
+            return

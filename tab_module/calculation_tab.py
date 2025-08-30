@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtCore import Qt
 import pandas as pd
+from PySide6.QtGui import QColor
 from tab_module.calculation_modules.ppa_calculation import build_ppa_per_pair
 from tab_module.calculation_modules.epc_calculation import build_epc_per_pair  # EPC 429/429
 from tab_module.calculation_modules.plot_ppa import draw_ppa_df  # hỗ trợ tuple (segments, summary)
@@ -122,7 +123,7 @@ class CalculationTab(QWidget):
                     text = ""
                 elif isinstance(val, (pd.Timestamp, )):
                     # format kiểu "20:00 12/30/24"
-                    text = val.strftime("%H:%M %m/%d/%y")
+                    text = val.strftime("%H:%M %d/%m/%y")#("%H:%M %m/%d/%y")
                 else:
                     text = str(val)
 
@@ -130,12 +131,77 @@ class CalculationTab(QWidget):
 
                 if isinstance(val, (int, float)):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if df.columns[c] == "Δ%" and pd.notna(val):
+                    try:
+                        val_num = float(val)
+                        if val_num > 2:
+                            item.setBackground(QColor(144, 238, 144))  # xanh lá nhạt
+                        elif val_num < -2:
+                            item.setBackground(QColor(255, 182, 193))  # đỏ nhạt
+                    except Exception:
+                        pass
                 model.setItem(r, c, item)
         return model
+    def _merge_hour_with_contract(self, hour_df: pd.DataFrame, ct_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Ghép Sub-Contract vào hourly theo khóa thời gian dạng chuỗi '%H:%M %d/%m/%y'.
+        Tính duy nhất cột Δ% theo yêu cầu.
+        """
+        if hour_df is None or hour_df.empty:
+            return hour_df
+        if ct_df is None or ct_df.empty or "Time" not in ct_df or "Output Power" not in ct_df:
+            return hour_df
+
+        # ===== Left: hourly =====
+        tmp = hour_df.copy()
+
+        # bảo đảm 'Thời điểm' là datetime trước khi format
+        if "Thời điểm" in tmp.columns and not pd.api.types.is_datetime64_any_dtype(tmp["Thời điểm"]):
+            tmp["Thời điểm"] = pd.to_datetime(tmp["Thời điểm"], errors="coerce")
+
+        # format -> string khóa thống nhất
+        tmp["TimeKey"] = pd.to_datetime(tmp["Thời điểm"], errors="coerce").dt.strftime("%H:%M %d/%m/%y")
+        tmp = tmp.dropna(subset=["TimeKey"])
+        tmp["TimeKey"] = tmp["TimeKey"].astype(str)
+
+        # ===== Right: Sub-Contract =====
+        ct = ct_df.copy()
+        # nếu Time là datetime -> format; nếu là string -> vẫn ép datetime rồi format cho chắc
+        ct["TimeKey"] = pd.to_datetime(ct["Time"], errors="coerce", dayfirst=True).dt.strftime("%H:%M %d/%m/%y")
+        ct = ct.dropna(subset=["TimeKey"])
+        ct["TimeKey"] = ct["TimeKey"].astype(str)
+
+        ct["Output Power"] = pd.to_numeric(ct["Output Power"], errors="coerce")
+        ct = ct.rename(columns={"Output Power": "Output Power_CT"})
+
+        # xử lý trùng mốc thời gian: lấy bản ghi cuối cùng
+        ct = ct.groupby("TimeKey", as_index=False).last()[["TimeKey", "Output Power_CT"]]
+
+        # ===== Merge =====
+        out = tmp.merge(ct, on="TimeKey", how="left")
+
+        # ==== chỉ tính Δ% ====
+        out["Δ%"] = (out["MW"] - out["Output Power_CT"]) / out["MW"] * 100
+        out.loc[out["MW"].abs() <= 1e-9, "Δ%"] = None
+
+        # sắp cột: Thời điểm, MW, Output Power_CT, Δ%
+        pref = [c for c in ["Thời điểm", "MW", "Output Power_CT", "Δ%"] if c in out.columns]
+        rest = [c for c in out.columns if c not in pref + ["TimeKey"]]
+        out = out[pref + rest]
+        return out
+
+
     def _update_dashboard_from_hourly(self, mode_title, s1_hour, s2_hour, subtitle="cached"):
         self.lbl_dashboard_title.setText(f"{mode_title} – Hourly ({subtitle})")
-        self.table_hour_s1.setModel(self._df_to_model(s1_hour))
-        self.table_hour_s2.setModel(self._df_to_model(s2_hour))
+
+        # GHÉP Sub-Contract nếu có
+        df1_ct = getattr(self.main_window_ref, "DF1_CT", None) if self.main_window_ref else None
+        df2_ct = getattr(self.main_window_ref, "DF2_CT", None) if self.main_window_ref else None
+        s1_view = self._merge_hour_with_contract(s1_hour, df1_ct)
+        s2_view = self._merge_hour_with_contract(s2_hour, df2_ct)
+
+        self.table_hour_s1.setModel(self._df_to_model(s1_view))
+        self.table_hour_s2.setModel(self._df_to_model(s2_view))
         self.table_hour_s1.resizeColumnsToContents()
         self.table_hour_s2.resizeColumnsToContents()
 
