@@ -12,20 +12,7 @@ def build_epc_per_pair(
     make_gap_pairs: bool = True,          # Khâu nối gap phẳng (hiếm gặp khi universal cut)
     gap_min_sec: int = 1                  # Ngưỡng tối thiểu tạo gap pair
 ):
-    """
-    EPC 429/429:
-    - Tính các segment (start/hold/finish/...) cho từng cặp liên tiếp.
-    - UNIVERSAL CUT: nếu finish_t dự kiến > t_next thì cắt ngay tại t_next,
-      cập nhật 'finish' = (t_next, MW theo quỹ đạo tại t_next) và push event 'cut_by_overwrite'.
-    - Sanitize hold markers: gỡ bỏ hold nếu cắt trước hold, hoặc kéo hold_end = t_next nếu cắt trong hold.
-    - Summary có cờ InsideHold để nhận biết cắt trong hold.
-
-    Yêu cầu df_step có cột: 'Thời điểm' (datetime), 'MW' (numeric).
-    Trả về:
-      - segments: List[pd.DataFrame] với cột ["Event","MW","Thời điểm"]
-      - summary : pd.DataFrame tổng hợp
-    """
-    # ===== Tiền xử lý =====
+    # ===== Tiền xử lý (giữ nguyên) =====
     if df_step.empty or "MW" not in df_step or "Thời điểm" not in df_step:
         return [], pd.DataFrame()
 
@@ -55,27 +42,26 @@ def build_epc_per_pair(
     def mw_at(
         time_point,
         t_start, mw_start,
-        t_next, mw_tgt,
+        t_target, mw_tgt,
         hold_up_at_429_sec, hold_down_at_429_sec
     ) -> float:
         """
-        Trả về MW theo quỹ đạo vật lý EPC tại 'time_point' khi đi từ
-        (t_start, mw_start) -> (t_next, mw_tgt):
-          - Lên: 0.11 dưới 330, 0.22 khi >= 330; nếu băng 429 thì có hold_up_at_429_sec
-          - Xuống: 0.22 (theo vùng 330), nếu băng 429 thì có hold_down_at_429_sec
+        MW theo quỹ đạo EPC tại 'time_point' khi đi từ (t_start, mw_start) -> (t_target, mw_tgt).
+        Quy tắc EPC:
+          - Lên: 0.11 dưới 330, 0.22 khi >=330; nếu băng 429 thì hold tại 429 (hold_up_at_429_sec).
+          - Xuống: nếu băng 429 thì hold tại 429 (hold_down_at_429_sec); ngoài ra chọn rate
+                   theo vùng 330: dùng 0.22 nếu có liên đới vùng >=330, ngược lại 0.11.
         """
-        # Biên trái
         if time_point <= t_start:
             return float(mw_start)
 
-        rate_low = 0.11
+        rate_low  = 0.11
         rate_fast = 0.22
 
         # LÊN
         if mw_tgt > mw_start:
             crosses_429 = (mw_start < 429.0 <= mw_tgt)
             if not crosses_429:
-                # đoạn không băng 429, chọn rate theo vùng 330
                 rate = rate_fast if (mw_start >= 330.0 and mw_tgt >= 330.0) else rate_low
                 dt = max((time_point - t_start).total_seconds(), 0.0)
                 return float(min(mw_start + rate * dt, mw_tgt))
@@ -93,7 +79,6 @@ def build_epc_per_pair(
                 if time_point <= hold_end:
                     return 429.0
                 dt_after = max((time_point - hold_end).total_seconds(), 0.0)
-                # sau 429: vùng >= 330 -> 0.22
                 return float(min(429.0 + rate_fast * dt_after, mw_tgt))
             else:
                 dt_after = max((time_point - t_429).total_seconds(), 0.0)
@@ -104,7 +89,6 @@ def build_epc_per_pair(
             crosses_429 = (mw_start > 429.0 >= mw_tgt)
             if not crosses_429:
                 # không băng 429
-                # chọn rate theo vùng 330 của đoạn (ít nghiêm ngặt, nhưng bám quy ước chung)
                 rate = rate_fast if (mw_start >= 330.0 or mw_tgt >= 330.0) else rate_low
                 dt = max((time_point - t_start).total_seconds(), 0.0)
                 return float(max(mw_start - rate * dt, mw_tgt))
@@ -116,13 +100,11 @@ def build_epc_per_pair(
                 dt = max((time_point - t_start).total_seconds(), 0.0)
                 return float(max(mw_start - rate_to_429 * dt, 429.0))
 
-            # hold tại 429 nếu có
             if hold_down_at_429_sec > 0:
                 hold_end = t_429 + timedelta(seconds=hold_down_at_429_sec)
                 if time_point <= hold_end:
                     return 429.0
                 dt_after = max((time_point - hold_end).total_seconds(), 0.0)
-                # sau 429 đi xuống, vẫn dùng 0.22 để về đích
                 return float(max(429.0 - rate_fast * dt_after, mw_tgt))
             else:
                 dt_after = max((time_point - t_429).total_seconds(), 0.0)
@@ -134,7 +116,7 @@ def build_epc_per_pair(
     segments = []
     summary_rows = []
 
-    # ===== Main loop cho từng cặp i -> i+1 =====
+    # ===== Main loop =====
     for i in range(len(df) - 1):
         t_start = df.loc[i, "Thời điểm"]
         mw_start = float(df.loc[i, "MW"])
@@ -142,89 +124,73 @@ def build_epc_per_pair(
         mw_tgt = float(df.loc[i + 1, "MW"])
 
         events, mws, times = [], [], []
-
         def push(ev, mw, t):
             events.append(ev); mws.append(float(mw)); times.append(t)
 
-        # Start cặp
         push("start", mw_start, t_start)
 
-        # ===== TÍNH FINISH_T THEO QUỸ ĐẠO (chưa xét cắt đuôi) =====
+        # ===== FINISH_T dự kiến (quỹ đạo EPC) =====
         hold_mw = None
         hold_start_t = None
         hold_end_t = None
 
-        rate_low = 0.11
+        rate_low  = 0.11
         rate_fast = 0.22
 
         if mw_tgt > mw_start:
-            # TĂNG
             if mw_start < 429.0 <= mw_tgt:
                 rate_to_429 = rate_low if mw_start < 330.0 else rate_fast
                 t_429 = t_start + ramp_dt(429.0 - mw_start, rate_to_429)
                 if hold_up_at_429_sec > 0:
                     hold_mw = 429.0
                     hold_start_t = t_429
-                    hold_end_t = t_429 + timedelta(seconds=hold_up_at_429_sec)
+                    hold_end_t   = t_429 + timedelta(seconds=hold_up_at_429_sec)
                     push("hold_start", 429.0, hold_start_t)
-                    push("hold_end", 429.0, hold_end_t)
+                    push("hold_end",   429.0, hold_end_t)
                     t_after = hold_end_t
                 else:
                     t_after = t_429
-
-                # sau 429: vùng >= 330 -> 0.22
-                if mw_tgt == 429.0:
-                    finish_t = t_after
-                else:
-                    finish_t = t_after + ramp_dt(mw_tgt - 429.0, rate_fast)
+                finish_t = t_after if (mw_tgt == 429.0) else (t_after + ramp_dt(mw_tgt - 429.0, rate_fast))
                 push("finish", mw_tgt, finish_t)
-
             else:
-                # không băng 429: chọn rate theo vùng 330
                 rate = rate_fast if (mw_start >= 330.0 and mw_tgt >= 330.0) else rate_low
                 finish_t = t_start + ramp_dt(mw_tgt - mw_start, rate)
                 push("finish", mw_tgt, finish_t)
 
         elif mw_tgt < mw_start:
-            # GIẢM
             if mw_start > 429.0 >= mw_tgt:
                 rate_to_429 = rate_fast if mw_start >= 330.0 else rate_low
                 t_429 = t_start + ramp_dt(mw_start - 429.0, rate_to_429)
                 if hold_down_at_429_sec > 0:
                     hold_mw = 429.0
                     hold_start_t = t_429
-                    hold_end_t = t_429 + timedelta(seconds=hold_down_at_429_sec)
+                    hold_end_t   = t_429 + timedelta(seconds=hold_down_at_429_sec)
                     push("hold_start", 429.0, hold_start_t)
-                    push("hold_end", 429.0, hold_end_t)
+                    push("hold_end",   429.0, hold_end_t)
                     t_after = hold_end_t
                 else:
                     t_after = t_429
-
-                # sau 429 đi xuống: 0.22
                 finish_t = t_after + ramp_dt(abs(429.0 - mw_tgt), rate_fast)
                 push("finish", mw_tgt, finish_t)
-
             else:
-                # không băng 429
                 rate = rate_fast if (mw_start >= 330.0 or mw_tgt >= 330.0) else rate_low
                 finish_t = t_start + ramp_dt(mw_start - mw_tgt, rate)
                 push("finish", mw_tgt, finish_t)
 
         else:
-            # PHẲNG
             finish_t = t_next
             push("finish", mw_tgt, finish_t)
 
-        # ===== UNIVERSAL CUT: nếu lệnh kế tiếp đến sớm hơn =====
+        # ===== UNIVERSAL CUT CHUẨN (y hệt PPA) =====
         if finish_t > t_next:
             mw_cut = mw_at(
                 time_point=t_next,
                 t_start=t_start, mw_start=mw_start,
-                t_next=t_next,   mw_tgt=mw_tgt,
+                t_target=t_next, mw_tgt=mw_tgt,
                 hold_up_at_429_sec=hold_up_at_429_sec,
                 hold_down_at_429_sec=hold_down_at_429_sec,
             )
-            # cập nhật 'finish' về t_next + MW cắt
+            # 1) cập nhật chính xác event 'finish' về t_next & MW_cut
             try:
                 idx_fin_local = max(idx for idx, ev in enumerate(events) if ev == "finish")
                 times[idx_fin_local] = t_next
@@ -232,22 +198,20 @@ def build_epc_per_pair(
             except ValueError:
                 push("finish", mw_cut, t_next)
 
-            # đánh dấu điểm cắt
+            # 2) đánh dấu điểm cắt
             push("cut_by_overwrite", mw_cut, t_next)
             finish_t = t_next
 
-        # ===== Sanitize hold markers sau universal cut =====
+        # ===== Sanitize hold markers sau CUT (đồng nhất với PPA) =====
         if hold_start_t is not None and hold_end_t is not None:
             if finish_t <= hold_start_t:
-                # cắt trước khi tới hold -> bỏ cả hold_start/hold_end đã push
+                # cắt trước khi tới hold -> bỏ cả hold_start/hold_end
                 idxs = [k for k, ev in enumerate(events) if ev in ("hold_start", "hold_end")]
                 for k in sorted(idxs, reverse=True):
                     del events[k]; del mws[k]; del times[k]
-                hold_start_t = None
-                hold_end_t   = None
-                hold_mw      = None
+                hold_start_t = None; hold_end_t = None; hold_mw = None
             elif hold_start_t < finish_t < hold_end_t:
-                # cắt trong hold -> giữ hold_start, kéo hold_end về finish_t
+                # cắt trong hold -> kéo hold_end về finish_t
                 for k, ev in enumerate(events):
                     if ev == "hold_end":
                         times[k] = finish_t
@@ -255,7 +219,7 @@ def build_epc_per_pair(
                             mws[k] = float(hold_mw)
                 hold_end_t = finish_t
 
-        # (tuỳ chọn) loại mọi event có thời điểm > finish_t (trừ 'finish' vốn đã = finish_t)
+        # ===== Bỏ mọi event > finish_t (trừ 'finish' vốn đã = finish_t) =====
         _keep = []
         for ev, t_val in zip(events, times):
             _keep.append((ev == "finish") or (t_val <= finish_t))
@@ -285,7 +249,7 @@ def build_epc_per_pair(
             "InsideHold": inside_hold_flag,
         })
 
-        # ===== GAP PAIR phẳng (thường = 0 giây khi universal cut) =====
+        # ===== GAP pair phẳng (nếu có) =====
         if make_gap_pairs:
             gap_sec = (t_next - finish_t).total_seconds()
             if gap_sec > max(float(gap_min_sec), 0.0):

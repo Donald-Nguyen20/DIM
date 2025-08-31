@@ -1,0 +1,19 @@
+file,line,call,qualified,assigned_to
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\main_window.py,152,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\epc_calculation.py,17,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\epc_calculation.py,36,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\export_utils.py,39,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\export_utils.py,46,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\export_utils.py,87,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\export_utils.py,125,DataFrame,pd.DataFrame,df_s1_min
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\export_utils.py,126,DataFrame,pd.DataFrame,df_s2_min
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\ppa_calculation.py,30,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\ppa_calculation.py,55,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\calculation_modules\ppa_minutely.py,109,DataFrame,pd.DataFrame,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\main_window_modules\data_utils.py,32,read_csv,pd.read_csv,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\main_window_modules\data_utils.py,35,read_csv,pd.read_csv,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\main_window_modules\data_utils.py,39,read_excel,pd.read_excel,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\main_window_modules\data_utils.py,43,read_csv,pd.read_csv,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\main_window_modules\data_utils.py,46,read_excel,pd.read_excel,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\main_window_modules\data_utils.py,49,read_excel,pd.read_excel,
+E:\3. Coding\LD\Calculatorv1\DIM\tab_module\main_window_modules\pandas_model.py,6,DataFrame,pd.DataFrame,

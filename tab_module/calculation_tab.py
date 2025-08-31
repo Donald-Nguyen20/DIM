@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QMessageBox,
     QHBoxLayout, QFileDialog, QTableView
 )
+from PySide6.QtWidgets import QDialog, QListWidget, QListWidgetItem, QDialogButtonBox
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtCore import Qt
 import pandas as pd
@@ -11,6 +12,8 @@ from tab_module.calculation_modules.ppa_calculation import build_ppa_per_pair
 from tab_module.calculation_modules.epc_calculation import build_epc_per_pair  # EPC 429/429
 from tab_module.calculation_modules.plot_ppa import draw_ppa_df  # hỗ trợ tuple (segments, summary)
 from tab_module.calculation_modules.ppa_minutely import ppa_segments_to_minutely
+from tab_module.calculation_modules.df_inventory import collect_available_dataframes, summarize_df_dict
+
 # export phút + giờ trong 1 sheet
 from tab_module.calculation_modules.export_utils import (
     export_ppa_minutely_and_hourly_to_excel,
@@ -60,12 +63,20 @@ class CalculationTab(QWidget):
         # ================= Dashboard (Hourly Preview) =================
         #root.addWidget(QLabel("Dashboard: Hourly preview (cập nhật sau khi Calculate)"))
 
-        # Tiêu đề động cho dashboard
+        # Tiêu đề động + nút Export Data cùng một hàng
+        title_row = QHBoxLayout()
         self.lbl_dashboard_title = QLabel("—")
         font = self.lbl_dashboard_title.font()
         font.setBold(True)
         self.lbl_dashboard_title.setFont(font)
-        root.addWidget(self.lbl_dashboard_title)
+        title_row.addWidget(self.lbl_dashboard_title, stretch=1)
+
+        self.btn_export_data = QPushButton("Export Data")
+        self.btn_export_data.clicked.connect(self.export_data)  # handler ở Bước 3
+        title_row.addWidget(self.btn_export_data, stretch=0, alignment=Qt.AlignRight)
+
+        root.addLayout(title_row)
+
 
         # 2 bảng: S1 & S2
         row_dash = QHBoxLayout()
@@ -341,3 +352,77 @@ class CalculationTab(QWidget):
             QMessageBox.warning(self, "Chưa tính EPC", "Hãy bấm 'Calculate EPC' trước.")
             return
         draw_ppa_df(self.main_window_ref.DF2_epc, "DF2_EPC – S2", parent=self)
+
+    def export_data(self):
+        # Gom tất cả DataFrame hiện có từ main_window_ref
+        df_map = collect_available_dataframes(self.main_window_ref)
+        if not df_map:
+            QMessageBox.information(self, "Export Data", "Chưa có DataFrame nào để xuất.")
+            return
+
+        # Cho phép tick chọn
+        dlg = _ExportDataDialog(df_map, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        keys = dlg.selected_keys()
+        if not keys:
+            QMessageBox.information(self, "Export Data", "Chưa chọn DataFrame nào.")
+            return
+
+        # Chọn nơi lưu
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Lưu Excel (multi-sheet)", "Exported_Data.xlsx", "Excel Files (*.xlsx)"
+        )
+        if not path:
+            return
+
+        # Ghi mỗi DataFrame vào một sheet
+        try:
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                for k in keys:
+                    df = df_map.get(k)
+                    if df is None or df.empty:
+                        continue
+                    safe_sheet = k[:31]  # giới hạn tên sheet Excel
+                    df.to_excel(writer, sheet_name=safe_sheet, index=False)
+            QMessageBox.information(self, "Hoàn tất", f"Đã lưu file:\n{path}")
+        except PermissionError:
+            QMessageBox.critical(self, "Không thể ghi file",
+                                "File đang mở trong Excel hoặc không có quyền ghi. Hãy đóng file rồi thử lại.")
+        except Exception as ex:
+            QMessageBox.critical(self, "Lỗi khi xuất Excel", f"Đã xảy ra lỗi:\n{ex}")
+
+class _ExportDataDialog(QDialog):
+    """Dialog hiển thị danh sách DataFrame để tick chọn trước khi export."""
+    def __init__(self, df_map: dict[str, pd.DataFrame], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Chọn DataFrame để xuất Excel")
+        self._df_map = df_map
+
+        lay = QVBoxLayout(self)
+        self.listw = QListWidget(self)
+        for name, df in df_map.items():
+            rows, cols = df.shape
+            item = QListWidgetItem(f"{name}  —  rows={rows}  cols={cols}")
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            item.setData(Qt.UserRole, name)
+            self.listw.addItem(item)
+        lay.addWidget(self.listw)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def selected_keys(self) -> list[str]:
+        out = []
+        for i in range(self.listw.count()):
+            it = self.listw.item(i)
+            if it.checkState() == Qt.Checked:
+                out.append(it.data(Qt.UserRole))
+        return out
+    
+
+
+
