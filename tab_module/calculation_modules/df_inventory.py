@@ -19,9 +19,9 @@ def collect_available_dataframes(main_window_ref) -> Dict[str, pd.DataFrame]:
     if not mw:
         return out
 
-    # Raw input
-    _add_df(out, "DF1_raw", getattr(mw, "DF1", None))
-    _add_df(out, "DF2_raw", getattr(mw, "DF2", None))
+    # # Raw input
+    # _add_df(out, "DF1_raw", getattr(mw, "DF1", None))
+    # _add_df(out, "DF2_raw", getattr(mw, "DF2", None))
 
     # Dashboard views (đã merge hợp đồng)
     _add_df(out, "DF1_dashboard", getattr(mw, "DF1_dashboard", None))
@@ -39,24 +39,24 @@ def collect_available_dataframes(main_window_ref) -> Dict[str, pd.DataFrame]:
     _add_df(out, "DF1_EPC_hourly", getattr(mw, "DF1_epc_hourly", None))
     _add_df(out, "DF2_EPC_hourly", getattr(mw, "DF2_epc_hourly", None))
 
-    # PPA/EPC segments & summary (tuple -> tách 2 DF)
-    ppa1 = getattr(mw, "DF1_ppa", None)
-    if isinstance(ppa1, tuple) and len(ppa1) == 2:
-        _add_df(out, "DF1_PPA_segments", ppa1[0])
-        _add_df(out, "DF1_PPA_summary", ppa1[1])
-    ppa2 = getattr(mw, "DF2_ppa", None)
-    if isinstance(ppa2, tuple) and len(ppa2) == 2:
-        _add_df(out, "DF2_PPA_segments", ppa2[0])
-        _add_df(out, "DF2_PPA_summary", ppa2[1])
+    # # PPA/EPC segments & summary (tuple -> tách 2 DF)
+    # ppa1 = getattr(mw, "DF1_ppa", None)
+    # if isinstance(ppa1, tuple) and len(ppa1) == 2:
+    #     _add_df(out, "DF1_PPA_segments", ppa1[0])
+    #     _add_df(out, "DF1_PPA_summary", ppa1[1])
+    # ppa2 = getattr(mw, "DF2_ppa", None)
+    # if isinstance(ppa2, tuple) and len(ppa2) == 2:
+    #     _add_df(out, "DF2_PPA_segments", ppa2[0])
+    #     _add_df(out, "DF2_PPA_summary", ppa2[1])
 
-    epc1 = getattr(mw, "DF1_epc", None)
-    if isinstance(epc1, tuple) and len(epc1) == 2:
-        _add_df(out, "DF1_EPC_segments", epc1[0])
-        _add_df(out, "DF1_EPC_summary", epc1[1])
-    epc2 = getattr(mw, "DF2_epc", None)
-    if isinstance(epc2, tuple) and len(epc2) == 2:
-        _add_df(out, "DF2_EPC_segments", epc2[0])
-        _add_df(out, "DF2_EPC_summary", epc2[1])
+    # epc1 = getattr(mw, "DF1_epc", None)
+    # if isinstance(epc1, tuple) and len(epc1) == 2:
+    #     _add_df(out, "DF1_EPC_segments", epc1[0])
+    #     _add_df(out, "DF1_EPC_summary", epc1[1])
+    # epc2 = getattr(mw, "DF2_epc", None)
+    # if isinstance(epc2, tuple) and len(epc2) == 2:
+    #     _add_df(out, "DF2_EPC_segments", epc2[0])
+    #     _add_df(out, "DF2_EPC_summary", epc2[1])
 
     return out
 
