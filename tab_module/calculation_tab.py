@@ -263,16 +263,16 @@ class CalculationTab(QWidget):
         self._update_dashboard_from_hourly("PPA", s1_hour, s2_hour)
 
         # hỏi lưu file
-        path, _ = QFileDialog.getSaveFileName(self, "Lưu PPA (minutely + hourly)", "PPA_Hour.xlsx", "Excel Files (*.xlsx)")
-        if not path:
-            QMessageBox.information(self, "Đã tính xong", "Đã tạo DF1_ppa/DF2_ppa cùng dữ liệu phút + giờ (chưa lưu file).")
-            return
-        try:
-            # export có thể dùng lại s1_min/s2_min và cả s1_hour/s2_hour
-            export_ppa_minutely_and_hourly_to_excel(s1_min, s2_min, filepath=path, sheet_name="PPA", freq="T", drop_incomplete=True)
-            QMessageBox.information(self, "Hoàn tất", f"Đã lưu file:\n{path}")
-        except Exception as ex:
-            QMessageBox.critical(self, "Lỗi khi xuất Excel", f"Đã xảy ra lỗi:\n{ex}")
+        # path, _ = QFileDialog.getSaveFileName(self, "Lưu PPA (minutely + hourly)", "PPA_Hour.xlsx", "Excel Files (*.xlsx)")
+        # if not path:
+        #     QMessageBox.information(self, "Đã tính xong", "Đã tạo DF1_ppa/DF2_ppa cùng dữ liệu phút + giờ (chưa lưu file).")
+        #     return
+        # try:
+        #     # export có thể dùng lại s1_min/s2_min và cả s1_hour/s2_hour
+        #     export_ppa_minutely_and_hourly_to_excel(s1_min, s2_min, filepath=path, sheet_name="PPA", freq="T", drop_incomplete=True)
+        #     QMessageBox.information(self, "Hoàn tất", f"Đã lưu file:\n{path}")
+        # except Exception as ex:
+        #     QMessageBox.critical(self, "Lỗi khi xuất Excel", f"Đã xảy ra lỗi:\n{ex}")
 
 
     def draw_df1_ppa(self):
@@ -317,29 +317,29 @@ class CalculationTab(QWidget):
 
 
         # hỏi lưu file
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Lưu EPC (minutely + hourly)", "EPC_Hour.xlsx", "Excel Files (*.xlsx)"
-        )
-        if not path:
-            QMessageBox.information(self, "Đã tính xong",
-                                    "Đã tạo DF1_epc/DF2_epc và dữ liệu theo phút (chưa lưu file).")
-            return
-        try:
-            export_ppa_minutely_and_hourly_to_excel(
-                df_s1_minutely=s1_min,
-                df_s2_minutely=s2_min,
-                filepath=path,
-                sheet_name="EPC",
-                freq="T",
-                drop_incomplete=True
-            )
-            QMessageBox.information(self, "Hoàn tất", f"Đã lưu file:\n{path}")
-        except PermissionError:
-            QMessageBox.critical(self, "Không thể ghi file",
-                                 "File đang mở trong Excel hoặc không có quyền ghi.\n"
-                                 "Hãy đóng file rồi thử lại, hoặc lưu sang tên khác.")
-        except Exception as ex:
-            QMessageBox.critical(self, "Lỗi khi xuất Excel", f"Đã xảy ra lỗi:\n{ex}")
+        # path, _ = QFileDialog.getSaveFileName(
+        #     self, "Lưu EPC (minutely + hourly)", "EPC_Hour.xlsx", "Excel Files (*.xlsx)"
+        # )
+        # if not path:
+        #     QMessageBox.information(self, "Đã tính xong",
+        #                             "Đã tạo DF1_epc/DF2_epc và dữ liệu theo phút (chưa lưu file).")
+        #     return
+        # try:
+        #     export_ppa_minutely_and_hourly_to_excel(
+        #         df_s1_minutely=s1_min,
+        #         df_s2_minutely=s2_min,
+        #         filepath=path,
+        #         sheet_name="EPC",
+        #         freq="T",
+        #         drop_incomplete=True
+        #     )
+        #     QMessageBox.information(self, "Hoàn tất", f"Đã lưu file:\n{path}")
+        # except PermissionError:
+        #     QMessageBox.critical(self, "Không thể ghi file",
+        #                          "File đang mở trong Excel hoặc không có quyền ghi.\n"
+        #                          "Hãy đóng file rồi thử lại, hoặc lưu sang tên khác.")
+        # except Exception as ex:
+        #     QMessageBox.critical(self, "Lỗi khi xuất Excel", f"Đã xảy ra lỗi:\n{ex}")
 
     def draw_df1_epc(self):
         if not self.main_window_ref or not hasattr(self.main_window_ref, "DF1_epc"):

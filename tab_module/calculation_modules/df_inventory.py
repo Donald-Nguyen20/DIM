@@ -4,11 +4,26 @@ import pandas as pd
 from typing import Dict, Tuple
 
 EXCEL_SHEET_MAXLEN = 31
+# Mapping tên DataFrame export
+NAME_MAP = {
+    "DF1_dashboard": "Data_dashboard_U1",
+    "DF2_dashboard": "Data_dashboard_U2",
+    "DF1_PPA_minutely": "Data_ppa_minutely_U1",
+    "DF2_PPA_minutely": "Data_ppa_minutely_U2",
+    "DF1_PPA_hourly": "Data_ppa_hourly_U1",
+    "DF2_PPA_hourly": "Data_ppa_hourly_U2",
+    "DF1_EPC_minutely": "Data_epc_minutely_U1",
+    "DF2_EPC_minutely": "Data_epc_minutely_U2",
+    "DF1_EPC_hourly": "Data_epc_hourly_U1",
+    "DF2_EPC_hourly": "Data_epc_hourly_U2",
+}
 
 def _add_df(out: Dict[str, pd.DataFrame], name: str, df):
     """Chỉ nhận DataFrame không rỗng. Cắt tên sheet <= 31 ký tự."""
     if isinstance(df, pd.DataFrame) and not df.empty:
-        out[name[:EXCEL_SHEET_MAXLEN]] = df
+        export_name = NAME_MAP.get(name, name)   # <--- dùng mapping
+        out[export_name[:EXCEL_SHEET_MAXLEN]] = df
+
 
 def collect_available_dataframes(main_window_ref) -> Dict[str, pd.DataFrame]:
     """
