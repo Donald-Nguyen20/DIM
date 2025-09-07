@@ -91,7 +91,15 @@ class MainWindow(QMainWindow):
 
         df = df_raw.iloc[:, POSITION_INDEXES].copy()
         df.columns = REQUIRED_COLS
+        for col in ["Thời điểm BĐTH", "Thời điểm hoàn thành"]:
+            df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
 
+        # Nếu có cả 2 mốc, sort theo BĐTH rồi đến Hoàn thành (NaT để cuối)
+        df = df.sort_values(
+            by=["Tổ máy", "Thời điểm BĐTH", "Thời điểm hoàn thành"],
+            na_position="last",
+            kind="mergesort"
+        ).reset_index(drop=True)
         for col in ["CS ra lệnh (MW)", "CS hoàn thành (MW)"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").round(4)
         df = df.dropna(subset=["CS hoàn thành (MW)"]).reset_index(drop=True)
@@ -143,6 +151,12 @@ class MainWindow(QMainWindow):
             # Căn hàng: bỏ phần tử đầu của thời điểm, bỏ phần tử cuối của MW
             t = t[1:].reset_index(drop=True)
             mw = mw[:-1].reset_index(drop=True)
+            # >>> FIX: Ép lại "Thời điểm hoàn thành" của dòng đầu = dữ liệu gốc (không lệch giây)
+            if len(t) > 0 and len(dfi) > 0:
+                raw_end0 = dfi.iloc[0]["Thời điểm hoàn thành"]
+                if pd.notna(raw_end0) and raw_end0 != "0":
+                    t.iloc[0] = pd.to_datetime(raw_end0, errors="coerce", dayfirst=True)
+
 
             # Cắt/khớp độ dài stop_vals & case_series theo thời điểm
             stop_vals = stop_vals.iloc[:len(t)].reset_index(drop=True)
