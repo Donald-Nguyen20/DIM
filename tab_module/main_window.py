@@ -1,12 +1,19 @@
-# main_window.py
+# -*- coding: utf-8 -*-
 import pandas as pd
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTableView, QLabel, QFileDialog, QMessageBox, QGroupBox
 )
 from tab_module.main_window_modules.pandas_model import PandasModel
-from tab_module.main_window_modules.data_utils import POSITION_INDEXES, REQUIRED_COLS, double_col, interleave_cols, read_any
+from tab_module.main_window_modules.data_utils import (
+    POSITION_INDEXES, REQUIRED_COLS, double_col, interleave_cols, read_any
+)
 from tab_module.main_window_modules.plot_utils import draw_df
+from tab_module.calculation_modules.startup_calculation import (
+    compute_startup_table, compute_start_and_sync,
+    build_startup_timeline_with_markers
+)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -14,8 +21,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Dashboard S1 / S2 – Draw DF1/DF2")
         self.DF1 = pd.DataFrame()
         self.DF2 = pd.DataFrame()
-        self.DF1_CT = pd.DataFrame()   # NEW: Sub-Contract S1
-        self.DF2_CT = pd.DataFrame()   # NEW: Sub-Contract S2
+        self.DF1_CT = pd.DataFrame()   # Sub-Contract S1
+        self.DF2_CT = pd.DataFrame()   # Sub-Contract S2
 
         # Layout chính
         root = QWidget()
@@ -91,25 +98,89 @@ class MainWindow(QMainWindow):
 
         df = df_raw.iloc[:, POSITION_INDEXES].copy()
         df.columns = REQUIRED_COLS
-        for col in ["Thời điểm BĐTH", "Thời điểm hoàn thành"]:
-            df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
 
-        # Nếu có cả 2 mốc, sort theo BĐTH rồi đến Hoàn thành (NaT để cuối)
-        df = df.sort_values(
-            by=["Tổ máy", "Thời điểm BĐTH", "Thời điểm hoàn thành"],
-            na_position="last",
+        # ==== Chuẩn hoá sớm để sort/so sánh ổn định ====
+        df["Tổ máy"] = df["Tổ máy"].astype(str).str.strip().str.upper()
+        df["Case"]   = df["Case"].astype(str).str.strip()
+
+        # === 1) SORT trước bằng cột thời gian TẠM (không đụng dữ liệu gốc) ===
+        _ts_bd = pd.to_datetime(df["Thời điểm BĐTH"], errors="coerce", dayfirst=True)
+        _ts_ht = pd.to_datetime(df["Thời điểm hoàn thành"], errors="coerce", dayfirst=True)
+        df = df.assign(_ts_bd=_ts_bd, _ts_ht=_ts_ht).sort_values(
+            by=["Tổ máy", "_ts_bd", "_ts_ht"],
             kind="mergesort"
-        ).reset_index(drop=True)
+        ).drop(columns=["_ts_bd", "_ts_ht"]).reset_index(drop=True)
+
+        # === 2) XỬ LÝ ô trống (trước khi ép số) — giữ dữ liệu thô ===
+        def _is_empty(s: pd.Series) -> pd.Series:
+            return s.isna() | (s.astype(str).str.strip() == "")
+
+        mask_empty_hoanthanh = _is_empty(df["CS hoàn thành (MW)"])
+        mask_empty_ralenh    = _is_empty(df["CS ra lệnh (MW)"])
+
+        # Rule PRE: Case != "Thay đổi công suất" & cả 2 MW trống -> fill 0
+        mask_fill0 = (df["Case"].ne("Thay đổi công suất")) & mask_empty_hoanthanh & mask_empty_ralenh
+        df.loc[mask_fill0, ["CS hoàn thành (MW)", "CS ra lệnh (MW)"]] = 0
+        print(f"[PRE] Fill-0 (non-TĐCS & both MW empty): {int(mask_fill0.sum())} rows")
+
+        # === 3) CỬA SỔ 5 DÒNG QUANH 'Khởi động lò' (dùng DF thô) ===
+        def _get_startup_windows(dfi: pd.DataFrame, unit: str) -> pd.DataFrame:
+            dfi_unit = dfi[dfi["Tổ máy"] == unit].reset_index(drop=True)
+            idxs = dfi_unit.index[dfi_unit["Case"] == "Khởi động lò"].tolist()
+            if not idxs:
+                return dfi_unit.iloc[0:0].copy()
+            keep = []
+            for i in idxs:
+                start = max(i - 1, 0)
+                end   = min(i + 4, len(dfi_unit))  # i, i+1, i+2, i+3
+                keep.extend(range(start, end))
+            keep = sorted(set(keep))
+            return dfi_unit.loc[keep].reset_index(drop=True)
+
+        self.DF1_STARTUP = _get_startup_windows(df, "S1")
+        self.DF2_STARTUP = _get_startup_windows(df, "S2")
+        print("\n=== Startup S1 (5 dòng quanh 'Khởi động lò') ===")
+        print(self.DF1_STARTUP.head(10))
+        print("\n=== Startup S2 (5 dòng quanh 'Khởi động lò') ===")
+        print(self.DF2_STARTUP.head(10))
+
+        # === 4) Mốc BĐTH/Syn + timeline + summary (wrapper trọn gói) ===
+        s1_mocs = compute_start_and_sync(self.DF1_STARTUP)
+        s2_mocs = compute_start_and_sync(self.DF2_STARTUP)
+        print("S1 mốc:", s1_mocs)
+        print("S2 mốc:", s2_mocs)
+
+        timeline_s1 = build_startup_timeline_with_markers(self.DF1_STARTUP, "S1")
+        timeline_s2 = build_startup_timeline_with_markers(self.DF2_STARTUP, "S2")
+        print("\n=== Timeline S1 ===\n", timeline_s1)
+        print("\n=== Timeline S2 ===\n", timeline_s2)
+
+        summary = compute_startup_table(self.DF1_STARTUP, self.DF2_STARTUP)
+        print("\n=== STARTUP SUMMARY ===\n", summary)
+
+        # === 5) ÉP SỐ sau rule PRE ===
         for col in ["CS ra lệnh (MW)", "CS hoàn thành (MW)"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").round(4)
-        df = df.dropna(subset=["CS hoàn thành (MW)"]).reset_index(drop=True)
 
+        # === 6) DROP TĐCS nếu 'CS hoàn thành (MW)' vẫn NaN ===
+        mask_drop = df["Case"].eq("Thay đổi công suất") & df["CS hoàn thành (MW)"].isna()
+        dropped = int(mask_drop.sum())
+        df = df[~mask_drop].reset_index(drop=True)
+        print(f"[POST] Dropped (TĐCS & CS hoàn thành NaN): {dropped} rows")
+
+        # (Tuỳ chọn) re-sort nhẹ để đảm bảo thứ tự ổn định
+        _ts_bd = pd.to_datetime(df["Thời điểm BĐTH"], errors="coerce", dayfirst=True)
+        _ts_ht = pd.to_datetime(df["Thời điểm hoàn thành"], errors="coerce", dayfirst=True)
+        df = df.assign(_ts_bd=_ts_bd, _ts_ht=_ts_ht).sort_values(
+            by=["Tổ máy", "_ts_bd", "_ts_ht"], kind="mergesort"
+        ).drop(columns=["_ts_bd", "_ts_ht"]).reset_index(drop=True)
+
+        # === 7) Format thời gian để HIỂN THỊ ===
         for col in ["Thời điểm BĐTH", "Thời điểm hoàn thành"]:
-            df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
-            df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+            tmp_dt = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+            df[col] = tmp_dt.dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        df["Tổ máy"] = df["Tổ máy"].astype(str).str.strip().str.upper()
-
+        # === 8) TÁCH S1/S2 & build DF1/DF2 cho nút Draw ===
         df_s1 = df[df["Tổ máy"] == "S1"].reset_index(drop=True)
         df_s2 = df[df["Tổ máy"] == "S2"].reset_index(drop=True)
         if len(df_s1) > 1:
@@ -118,49 +189,32 @@ class MainWindow(QMainWindow):
             df_s2.loc[1:, "Thời điểm hoàn thành"] = "0"
 
         def make_df(dfi):
-            # MW dạng bậc thang từ "CS hoàn thành (MW)"
             mw = double_col(dfi, "CS hoàn thành (MW)")
+            t  = interleave_cols(dfi, "Thời điểm BĐTH", "Thời điểm hoàn thành")
 
-            # Chuỗi thời điểm interleave (BĐTH, Hoàn thành, ...)
-            t = interleave_cols(dfi, "Thời điểm BĐTH", "Thời điểm hoàn thành")
-
-            # --- Dừng lệnh theo BĐTH, hoàn thành = None, chèn None đầu ---
             if "Dừng lệnh" in dfi.columns:
                 stop_start = dfi["Dừng lệnh"].where(dfi["Dừng lệnh"].notna(), None).reset_index(drop=True)
             else:
                 stop_start = pd.Series([None] * len(dfi), dtype=object)
 
-            # nhân đôi để khớp step, rồi đặt xen kẽ [flag, None, flag, None, ...]
             stop_vals = stop_start.repeat(2).reset_index(drop=True)
             stop_vals.iloc[1::2] = None
-
-            # chèn None vào đầu (pandas >= 2.0 dùng concat thay append)
             stop_vals = pd.concat([pd.Series([None], dtype=object), stop_vals], ignore_index=True)
 
-            # ======= XỬ LÝ CỘT CASE TƯƠNG TỰ CỘT THỜI ĐIỂM =======
             if {"Case BĐTH", "Case hoàn thành"}.issubset(set(dfi.columns)):
                 case_series = interleave_cols(dfi, "Case BĐTH", "Case hoàn thành")
             elif "Case" in dfi.columns:
                 case_start = dfi["Case"].astype(object).reset_index(drop=True)
                 case_series = case_start.repeat(2).reset_index(drop=True)
-                case_series.iloc[1::2] = None  # vị trí hoàn thành để None
+                case_series.iloc[1::2] = None
             else:
-                # không có thông tin Case
                 case_series = pd.Series([None] * (len(dfi) * 2), dtype=object)
 
-            # Căn hàng: bỏ phần tử đầu của thời điểm, bỏ phần tử cuối của MW
-            t = t[1:].reset_index(drop=True)
+            t  = t[1:].reset_index(drop=True)
             mw = mw[:-1].reset_index(drop=True)
-            # >>> FIX: Ép lại "Thời điểm hoàn thành" của dòng đầu = dữ liệu gốc (không lệch giây)
-            if len(t) > 0 and len(dfi) > 0:
-                raw_end0 = dfi.iloc[0]["Thời điểm hoàn thành"]
-                if pd.notna(raw_end0) and raw_end0 != "0":
-                    t.iloc[0] = pd.to_datetime(raw_end0, errors="coerce", dayfirst=True)
 
-
-            # Cắt/khớp độ dài stop_vals & case_series theo thời điểm
             stop_vals = stop_vals.iloc[:len(t)].reset_index(drop=True)
-            case_out  = case_series[1:].reset_index(drop=True)  # bỏ phần tử đầu để song song với t
+            case_out  = case_series[1:].reset_index(drop=True)
             case_out  = case_out.iloc[:len(t)].reset_index(drop=True)
 
             return pd.DataFrame({
@@ -173,10 +227,8 @@ class MainWindow(QMainWindow):
         self.DF1 = make_df(df_s1)
         self.DF2 = make_df(df_s2)
 
-        print("\n====== DF1 (S1) ======")
-        print(self.DF1)
-        print("\n====== DF2 (S2) ======")
-        print(self.DF2)
+        print("\n====== DF1 (S1) ======"); print(self.DF1)
+        print("\n====== DF2 (S2) ======"); print(self.DF2)
 
         self.model_s1.setDataFrame(df_s1)
         self.model_s2.setDataFrame(df_s2)
@@ -217,15 +269,10 @@ class MainWindow(QMainWindow):
             print("\n===== DF2_CT (S2 – Sub Ct) =====")
             print(self.DF2_CT.head())
 
-            # (Tùy chọn) Hiển thị lên view riêng nếu anh có model/view cho Sub Ct
-            # self.model_s1_ct.setDataFrame(self.DF1_CT)
-            # self.model_s2_ct.setDataFrame(self.DF2_CT)
-            # self.view_s1_ct.resizeColumnsToContents()
-            # self.view_s2_ct.resizeColumnsToContents()
-
-            # (Tùy chọn) Thông báo
-            QMessageBox.information(self, "Import Sub-Contract",
-                                    f"Đã import thành công:\nS1: {len(self.DF1_CT)} dòng\nS2: {len(self.DF2_CT)} dòng")
+            QMessageBox.information(
+                self, "Import Sub-Contract",
+                f"Đã import thành công:\nS1: {len(self.DF1_CT)} dòng\nS2: {len(self.DF2_CT)} dòng"
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "Lỗi import Sub-Contract", str(e))
