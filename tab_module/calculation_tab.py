@@ -290,6 +290,12 @@ class CalculationTab(QWidget):
 
         s1_min = self._overlay_minutely(s1_min, s1_startup)
         s2_min = self._overlay_minutely(s2_min, s2_startup)
+        # --- NEW: overlay shutdown vào minutely PPA ---
+        s1_shutdown = getattr(self.main_window_ref, "DF1_shutdown_minutely", None)
+        s2_shutdown = getattr(self.main_window_ref, "DF2_shutdown_minutely", None)
+
+        s1_min = self._overlay_minutely(s1_min, s1_shutdown)
+        s2_min = self._overlay_minutely(s2_min, s2_shutdown)
 
         # lưu lại bản đã overlay
         self.main_window_ref.DF1_ppa_minutely = s1_min
@@ -346,6 +352,12 @@ class CalculationTab(QWidget):
 
         s1_min = self._overlay_minutely(s1_min, s1_startup)
         s2_min = self._overlay_minutely(s2_min, s2_startup)
+        # --- NEW: overlay shutdown vào minutely EPC ---
+        s1_shutdown = getattr(self.main_window_ref, "DF1_shutdown_minutely", None)
+        s2_shutdown = getattr(self.main_window_ref, "DF2_shutdown_minutely", None)
+
+        s1_min = self._overlay_minutely(s1_min, s1_shutdown)
+        s2_min = self._overlay_minutely(s2_min, s2_shutdown)
 
         # lưu lại bản đã overlay
         self.main_window_ref.DF1_epc_minutely = s1_min

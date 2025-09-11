@@ -13,6 +13,11 @@ from tab_module.calculation_modules.startup_calculation import (
     compute_startup_table, compute_start_and_sync,
     build_startup_timeline_with_markers,build_startup_minutely_from_df_startup
 )
+from tab_module.calculation_modules.shutdown_calculation import (
+    build_shutdown_minutely_from_t40,
+)
+
+
 
 
 class MainWindow(QMainWindow):
@@ -28,6 +33,11 @@ class MainWindow(QMainWindow):
         self.DF2_startup_timeline  = pd.DataFrame()
         self.DF1_startup_minutely  = pd.DataFrame()
         self.DF2_startup_minutely  = pd.DataFrame()
+
+        self.DF1_shutdown_timeline  = pd.DataFrame()
+        self.DF2_shutdown_timeline  = pd.DataFrame()
+        self.DF1_shutdown_minutely  = pd.DataFrame()
+        self.DF2_shutdown_minutely  = pd.DataFrame()
 
 
         # Layout chính
@@ -142,6 +152,54 @@ class MainWindow(QMainWindow):
                 keep.extend(range(start, end))
             keep = sorted(set(keep))
             return dfi_unit.loc[keep].reset_index(drop=True)
+        def _get_shutdown_windows(dfi: pd.DataFrame, unit: str) -> pd.DataFrame:
+            """
+            Lấy cửa sổ vài dòng quanh mốc 'Ngừng tổ máy' cho 1 tổ máy.
+            Mặc định lấy i-2..i+3 (bạn đổi biên tuỳ ý).
+            """
+            import re
+            dfi_unit = dfi[dfi["Tổ máy"] == unit].reset_index(drop=True)
+            if "Case" not in dfi_unit.columns or dfi_unit.empty:
+                return dfi_unit.iloc[0:0].copy()
+
+            # Nhận nhiều biến thể tên gọi:
+            pat = re.compile(r"ngừng tổ máy|dừng tổ máy|shutdown", re.IGNORECASE)
+            idxs = dfi_unit.index[dfi_unit["Case"].astype(str).str.contains(pat, na=False)].tolist()
+            if not idxs:
+                return dfi_unit.iloc[0:0].copy()
+
+            keep = []
+            for i in idxs:
+                start = max(i - 2, 0)
+                end   = min(i + 4, len(dfi_unit))  # i, i+1, i+2, i+3
+                keep.extend(range(start, end))
+            keep = sorted(set(keep))
+            return dfi_unit.loc[keep].reset_index(drop=True)
+        def _first_shutdown_time(win: pd.DataFrame):
+            """Lấy đúng thời điểm của hàng có 'Ngừng tổ máy' trong window:
+            ưu tiên 'Thời điểm BĐTH', fallback 'Thời điểm hoàn thành'."""
+            import re
+            if win is None or win.empty or "Case" not in win.columns:
+                return None
+            pat = re.compile(r"ngừng tổ máy|dừng tổ máy|shutdown", re.IGNORECASE)
+            m = win["Case"].astype(str).str.contains(pat, na=False)
+            if not m.any():
+                return None
+            i = m.idxmax()  # hàng đầu tiên match trong window
+            t = pd.to_datetime(win.loc[i, "Thời điểm BĐTH"], errors="coerce", dayfirst=True)
+            if pd.isna(t):
+                t = pd.to_datetime(win.loc[i, "Thời điểm hoàn thành"], errors="coerce", dayfirst=True)
+            return None if pd.isna(t) else t
+
+
+        # === 3b) CỬA SỔ quanh 'Ngừng tổ máy' ===
+        self.DF1_SHUTDOWN = _get_shutdown_windows(df, "S1")
+        self.DF2_SHUTDOWN = _get_shutdown_windows(df, "S2")
+        print("\n=== Shutdown S1 (window quanh 'Ngừng tổ máy') ===")
+        print(self.DF1_SHUTDOWN.head(10))
+        print("\n=== Shutdown S2 (window quanh 'Ngừng tổ máy') ===")
+        print(self.DF2_SHUTDOWN.head(10))
+
 
         self.DF1_STARTUP = _get_startup_windows(df, "S1")
         self.DF2_STARTUP = _get_startup_windows(df, "S2")
@@ -149,6 +207,13 @@ class MainWindow(QMainWindow):
         print(self.DF1_STARTUP.head(10))
         print("\n=== Startup S2 (5 dòng quanh 'Khởi động lò') ===")
         print(self.DF2_STARTUP.head(10))
+        # ===== SHUTDOWN: lấy mốc 'Ngừng tổ máy' làm t40 (bắt đầu profile 40%->0) =====
+        t40_s1 = _first_shutdown_time(self.DF1_SHUTDOWN)
+        t40_s2 = _first_shutdown_time(self.DF2_SHUTDOWN)
+        print("\n=== SHUTDOWN Timestamps (mốc 'Ngừng tổ máy') ===")
+        print("S1 t40:", t40_s1.strftime("%Y-%m-%d %H:%M:%S") if t40_s1 is not None else None)
+        print("S2 t40:", t40_s2.strftime("%Y-%m-%d %H:%M:%S") if t40_s2 is not None else None)
+
 
         # === 4) Mốc BĐTH/Syn + timeline + summary (wrapper trọn gói) ===
         s1_mocs = compute_start_and_sync(self.DF1_STARTUP)
@@ -217,6 +282,30 @@ class MainWindow(QMainWindow):
             df_s1.loc[1:, "Thời điểm hoàn thành"] = "0"
         if len(df_s2) > 1:
             df_s2.loc[1:, "Thời điểm hoàn thành"] = "0"
+
+        if t40_s1 is not None:
+            sd1_tl, sd1_min = build_shutdown_minutely_from_t40(t40_s1, unit="S1", mw40=264.0)
+            self.DF1_shutdown_timeline = sd1_tl
+            self.DF1_shutdown_minutely = sd1_min
+            print("\n=== SHUTDOWN S1 TIMELINE ===\n", sd1_tl)
+            print("\n=== SHUTDOWN S1 MINUTELY (tail 100) ===\n", sd1_min.tail(100))
+        else:
+            self.DF1_shutdown_timeline = pd.DataFrame()
+            self.DF1_shutdown_minutely = pd.DataFrame()
+            print("\n[WARN] Không tìm thấy mốc 'Ngừng tổ máy' cho S1.")
+
+        if t40_s2 is not None:
+            sd2_tl, sd2_min = build_shutdown_minutely_from_t40(t40_s2, unit="S2", mw40=264.0)
+            self.DF2_shutdown_timeline = sd2_tl
+            self.DF2_shutdown_minutely = sd2_min
+            print("\n=== SHUTDOWN S2 TIMELINE ===\n", sd2_tl)
+            print("\n=== SHUTDOWN S2 MINUTELY (tail 100) ===\n", sd2_min.tail(100))
+        else:
+            self.DF2_shutdown_timeline = pd.DataFrame()
+            self.DF2_shutdown_minutely = pd.DataFrame()
+            print("\n[WARN] Không tìm thấy mốc 'Ngừng tổ máy' cho S2.")
+
+
 
         def make_df(dfi):
             mw = double_col(dfi, "CS hoàn thành (MW)")
