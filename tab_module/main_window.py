@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# main_window.py
 import pandas as pd
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -11,7 +11,7 @@ from tab_module.main_window_modules.data_utils import (
 from tab_module.main_window_modules.plot_utils import draw_df
 from tab_module.calculation_modules.startup_calculation import (
     compute_startup_table, compute_start_and_sync,
-    build_startup_timeline_with_markers
+    build_startup_timeline_with_markers,build_startup_minutely_from_df_startup
 )
 
 
@@ -23,6 +23,12 @@ class MainWindow(QMainWindow):
         self.DF2 = pd.DataFrame()
         self.DF1_CT = pd.DataFrame()   # Sub-Contract S1
         self.DF2_CT = pd.DataFrame()   # Sub-Contract S2
+        # >>> THÊM (giá trị khởi tạo)
+        self.DF1_startup_timeline  = pd.DataFrame()
+        self.DF2_startup_timeline  = pd.DataFrame()
+        self.DF1_startup_minutely  = pd.DataFrame()
+        self.DF2_startup_minutely  = pd.DataFrame()
+
 
         # Layout chính
         root = QWidget()
@@ -154,6 +160,30 @@ class MainWindow(QMainWindow):
         timeline_s2 = build_startup_timeline_with_markers(self.DF2_STARTUP, "S2")
         print("\n=== Timeline S1 ===\n", timeline_s1)
         print("\n=== Timeline S2 ===\n", timeline_s2)
+        self.DF1_startup_timeline = timeline_s1
+        self.DF2_startup_timeline = timeline_s2
+        # >>> THÊM: chỉ quy ra phút
+        tl1, s1_min = build_startup_minutely_from_df_startup(
+            self.DF1_STARTUP, "S1",
+            freq="T",
+            include_edge_minutes=True,
+            gap_policy="none"
+        )
+        tl2, s2_min = build_startup_minutely_from_df_startup(
+            self.DF2_STARTUP, "S2",
+            freq="T",
+            include_edge_minutes=True,
+            gap_policy="none"
+        )
+
+        self.DF1_startup_timeline = tl1
+        self.DF2_startup_timeline = tl2
+        self.DF1_startup_minutely = s1_min
+        self.DF2_startup_minutely = s2_min
+
+        print("\n=== STARTUP S1 MINUTELY (head) ===\n", self.DF1_startup_minutely.tail(100))
+        print("\n=== STARTUP S2 MINUTELY (head) ===\n", self.DF2_startup_minutely.tail(100))
+
 
         summary = compute_startup_table(self.DF1_STARTUP, self.DF2_STARTUP)
         print("\n=== STARTUP SUMMARY ===\n", summary)

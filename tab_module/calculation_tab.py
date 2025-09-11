@@ -200,6 +200,39 @@ class CalculationTab(QWidget):
         rest = [c for c in out.columns if c not in pref + ["TimeKey"]]
         out = out[pref + rest]
         return out
+    def _overlay_minutely(self, base_df: pd.DataFrame, overlay_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Dán-đè chuỗi phút 'overlay_df' (startup) lên 'base_df' (PPA/EPC) theo cột 'Thời điểm'.
+        - Nếu trùng phút: lấy MW của overlay (startup) đè lên.
+        - Nếu overlay có phút mà base không có: thêm vào kết quả.
+        """
+        if base_df is None or base_df.empty:
+            return overlay_df.copy() if overlay_df is not None else base_df
+        if overlay_df is None or overlay_df.empty:
+            return base_df
+
+        b = base_df.copy()
+        s = overlay_df.copy()
+
+        # Chuẩn hoá kiểu + ép về mốc phút (để match chính xác từng phút)
+        b["Thời điểm"] = pd.to_datetime(b["Thời điểm"], errors="coerce").dt.floor("T")
+        s["Thời điểm"] = pd.to_datetime(s["Thời điểm"], errors="coerce").dt.floor("T")
+        b["MW"] = pd.to_numeric(b["MW"], errors="coerce")
+        s["MW"] = pd.to_numeric(s["MW"], errors="coerce")
+
+        b = b.dropna(subset=["Thời điểm"]).sort_values("Thời điểm")
+        s = s.dropna(subset=["Thời điểm"]).sort_values("Thời điểm")
+        s = s.drop_duplicates(subset=["Thời điểm"], keep="last")
+
+        merged = b.merge(
+            s.rename(columns={"MW": "MW_startup"}),
+            on="Thời điểm",
+            how="outer"
+        ).sort_values("Thời điểm").reset_index(drop=True)
+
+        # Ưu tiên MW_startup nếu có, ngược lại giữ MW gốc
+        merged["MW"] = merged["MW_startup"].combine_first(merged["MW"])
+        return merged[["Thời điểm", "MW"]]
 
 
     def _update_dashboard_from_hourly(self, mode_title, s1_hour, s2_hour, subtitle="cached"):
@@ -251,6 +284,22 @@ class CalculationTab(QWidget):
         s2_min = ppa_segments_to_minutely(seg2, freq="T", include_pair_idx=False)
         self.main_window_ref.DF1_ppa_minutely = s1_min
         self.main_window_ref.DF2_ppa_minutely = s2_min
+        # --- NEW: overlay startup vào minutely PPA ---
+        s1_startup = getattr(self.main_window_ref, "DF1_startup_minutely", None)
+        s2_startup = getattr(self.main_window_ref, "DF2_startup_minutely", None)
+
+        s1_min = self._overlay_minutely(s1_min, s1_startup)
+        s2_min = self._overlay_minutely(s2_min, s2_startup)
+
+        # lưu lại bản đã overlay
+        self.main_window_ref.DF1_ppa_minutely = s1_min
+        self.main_window_ref.DF2_ppa_minutely = s2_min
+
+        # tính lại hourly từ bản đã overlay
+        s1_hour = minutely_to_hourly_avg(s1_min, freq="T", drop_incomplete=True, label="right")
+        s2_hour = minutely_to_hourly_avg(s2_min, freq="T", drop_incomplete=True, label="right")
+        self.main_window_ref.DF1_ppa_hourly = s1_hour
+        self.main_window_ref.DF2_ppa_hourly = s2_hour
 
         # >>> tạo DF giờ trước
         s1_hour = minutely_to_hourly_avg(s1_min, freq="T", drop_incomplete=True, label="right")
@@ -261,19 +310,6 @@ class CalculationTab(QWidget):
         # cập nhật dashboard từ DF giờ đã có
         self._last_mode = "PPA"
         self._update_dashboard_from_hourly("PPA", s1_hour, s2_hour)
-
-        # hỏi lưu file
-        # path, _ = QFileDialog.getSaveFileName(self, "Lưu PPA (minutely + hourly)", "PPA_Hour.xlsx", "Excel Files (*.xlsx)")
-        # if not path:
-        #     QMessageBox.information(self, "Đã tính xong", "Đã tạo DF1_ppa/DF2_ppa cùng dữ liệu phút + giờ (chưa lưu file).")
-        #     return
-        # try:
-        #     # export có thể dùng lại s1_min/s2_min và cả s1_hour/s2_hour
-        #     export_ppa_minutely_and_hourly_to_excel(s1_min, s2_min, filepath=path, sheet_name="PPA", freq="T", drop_incomplete=True)
-        #     QMessageBox.information(self, "Hoàn tất", f"Đã lưu file:\n{path}")
-        # except Exception as ex:
-        #     QMessageBox.critical(self, "Lỗi khi xuất Excel", f"Đã xảy ra lỗi:\n{ex}")
-
 
     def draw_df1_ppa(self):
         if not self.main_window_ref or not hasattr(self.main_window_ref, "DF1_ppa"):
@@ -304,6 +340,22 @@ class CalculationTab(QWidget):
         s2_min = ppa_segments_to_minutely(seg2, freq="T", include_pair_idx=False)
         self.main_window_ref.DF1_epc_minutely = s1_min
         self.main_window_ref.DF2_epc_minutely = s2_min
+        # --- NEW: overlay startup vào minutely EPC ---
+        s1_startup = getattr(self.main_window_ref, "DF1_startup_minutely", None)
+        s2_startup = getattr(self.main_window_ref, "DF2_startup_minutely", None)
+
+        s1_min = self._overlay_minutely(s1_min, s1_startup)
+        s2_min = self._overlay_minutely(s2_min, s2_startup)
+
+        # lưu lại bản đã overlay
+        self.main_window_ref.DF1_epc_minutely = s1_min
+        self.main_window_ref.DF2_epc_minutely = s2_min
+
+        # tính lại hourly từ bản đã overlay
+        s1_hour = minutely_to_hourly_avg(s1_min, freq="T", drop_incomplete=True, label="right")
+        s2_hour = minutely_to_hourly_avg(s2_min, freq="T", drop_incomplete=True, label="right")
+        self.main_window_ref.DF1_epc_hourly = s1_hour
+        self.main_window_ref.DF2_epc_hourly = s2_hour
 
         # cập nhật dashboard theo giờ
         # tạo & lưu DF giờ trước, rồi hiển thị từ cache (không tính lại)
@@ -315,31 +367,6 @@ class CalculationTab(QWidget):
         self._last_mode = "EPC"
         self._update_dashboard_from_hourly("EPC", s1_hour, s2_hour, subtitle="right")
 
-
-        # hỏi lưu file
-        # path, _ = QFileDialog.getSaveFileName(
-        #     self, "Lưu EPC (minutely + hourly)", "EPC_Hour.xlsx", "Excel Files (*.xlsx)"
-        # )
-        # if not path:
-        #     QMessageBox.information(self, "Đã tính xong",
-        #                             "Đã tạo DF1_epc/DF2_epc và dữ liệu theo phút (chưa lưu file).")
-        #     return
-        # try:
-        #     export_ppa_minutely_and_hourly_to_excel(
-        #         df_s1_minutely=s1_min,
-        #         df_s2_minutely=s2_min,
-        #         filepath=path,
-        #         sheet_name="EPC",
-        #         freq="T",
-        #         drop_incomplete=True
-        #     )
-        #     QMessageBox.information(self, "Hoàn tất", f"Đã lưu file:\n{path}")
-        # except PermissionError:
-        #     QMessageBox.critical(self, "Không thể ghi file",
-        #                          "File đang mở trong Excel hoặc không có quyền ghi.\n"
-        #                          "Hãy đóng file rồi thử lại, hoặc lưu sang tên khác.")
-        # except Exception as ex:
-        #     QMessageBox.critical(self, "Lỗi khi xuất Excel", f"Đã xảy ra lỗi:\n{ex}")
 
     def draw_df1_epc(self):
         if not self.main_window_ref or not hasattr(self.main_window_ref, "DF1_epc"):

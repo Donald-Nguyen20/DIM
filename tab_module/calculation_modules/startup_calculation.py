@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+#startup_calculation.py
 """
 startup_calculation.py
 Tính giờ & phân loại start-up, dựng timeline MW theo thời gian từ BĐTH.
@@ -631,3 +631,130 @@ def build_startup_timeline_with_markers(
     out = out.sort_values(by=["Δt_min_abs", "Time"], kind="mergesort").reset_index(drop=True)
     return out
 
+# =========================================================
+# 8) TỪ TIMELINE → SEGMENTS → MINUTELY (và HOURLY nếu cần)
+# =========================================================
+import pandas as pd
+from typing import Optional, Tuple
+
+def _timeline_to_segments_df(timeline: pd.DataFrame) -> list[pd.DataFrame]:
+    """
+    Đưa timeline (cột 'Time'/'Thời điểm', 'MW') về 1 danh sách segment (ít nhất 2 điểm).
+    Nếu timeline trống hoặc không đủ điểm → [].
+    """
+    if timeline is None or timeline.empty:
+        return []
+    t = timeline.copy()
+    # Chuẩn hoá tên cột thời gian
+    if "Time" in t.columns and "Thời điểm" not in t.columns:
+        t = t.rename(columns={"Time": "Thời điểm"})
+    # Ép kiểu
+    t["Thời điểm"] = pd.to_datetime(t["Thời điểm"], errors="coerce")
+    t["MW"] = pd.to_numeric(t["MW"], errors="coerce")
+    t = t.dropna(subset=["Thời điểm", "MW"]).sort_values("Thời điểm").reset_index(drop=True)
+    # Cần >=2 điểm để nội suy
+    return [t[["Thời điểm", "MW"]]] if len(t) >= 2 else []
+
+def build_startup_minutely_from_timeline(
+    timeline: pd.DataFrame,
+    *,
+    freq: str = "T",
+    include_edge_minutes: bool = True,
+    gap_policy: str = "none",
+    eps: float = 1e-6,
+) -> pd.DataFrame:
+    """
+    Quy đổi một timeline đã dựng sang chuỗi phút (minutely).
+    - `gap_policy`: "none" | "nan" | "ffill" | "bridge_linear"
+    """
+    segments = _timeline_to_segments_df(timeline)
+    if not segments:
+        return pd.DataFrame(columns=["Thời điểm", "MW"])
+
+    # import cục bộ để tránh vòng phụ thuộc giữa các module
+    from tab_module.calculation_modules.ppa_minutely import ppa_segments_to_minutely
+
+    return ppa_segments_to_minutely(
+        segments,
+        freq=freq,
+        include_pair_idx=False,
+        include_edge_minutes=include_edge_minutes,
+        eps=eps,
+        gap_policy=gap_policy,
+    )
+
+def build_startup_minutely_from_df_startup(
+    df_startup: pd.DataFrame,
+    unit: str = "",
+    *,
+    freq: str = "T",
+    include_edge_minutes: bool = True,
+    gap_policy: str = "none",
+    eps: float = 1e-6,
+    # các override/mode nếu muốn đi cùng logic dựng timeline
+    mw40_override: float | None = None,
+    mw100_override: float | None = None,
+    sync_mode: str = "expected",
+    expected_sync_minutes: float | None = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    One-shot: DF*_STARTUP → (timeline, minutely)
+    - Trả về (timeline, minutely). `timeline` là kết quả từ build_startup_timeline_with_markers.
+    - `minutely` là chuỗi phút nội suy từ chính timeline đó.
+    """
+    timeline = build_startup_timeline_with_markers(
+        df_startup, unit,
+        mw40_override=mw40_override,
+        mw100_override=mw100_override,
+        sync_mode=sync_mode,
+        expected_sync_minutes=expected_sync_minutes
+    )
+    minutely = build_startup_minutely_from_timeline(
+        timeline,
+        freq=freq,
+        include_edge_minutes=include_edge_minutes,
+        gap_policy=gap_policy,
+        eps=eps,
+    )
+    return timeline, minutely
+
+def build_startup_minutely_hourly_from_df_startup(
+    df_startup: pd.DataFrame,
+    unit: str = "",
+    *,
+    freq: str = "T",
+    include_edge_minutes: bool = True,
+    gap_policy: str = "none",
+    eps: float = 1e-6,
+    mw40_override: float | None = None,
+    mw100_override: float | None = None,
+    sync_mode: str = "expected",
+    expected_sync_minutes: float | None = None,
+    hourly_label: str = "right",
+    drop_incomplete: bool = True,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    One-shot: DF*_STARTUP → (timeline, minutely, hourly)
+    - hourly dùng lại minutely_to_hourly_avg để tổng hợp giờ.
+    """
+    timeline, minutely = build_startup_minutely_from_df_startup(
+        df_startup, unit,
+        freq=freq,
+        include_edge_minutes=include_edge_minutes,
+        gap_policy=gap_policy,
+        eps=eps,
+        mw40_override=mw40_override,
+        mw100_override=mw100_override,
+        sync_mode=sync_mode,
+        expected_sync_minutes=expected_sync_minutes,
+    )
+
+    # import cục bộ để tránh phụ thuộc cứng
+    from tab_module.calculation_modules.export_utils import minutely_to_hourly_avg
+    hourly = minutely_to_hourly_avg(
+        minutely,
+        freq=freq,
+        drop_incomplete=drop_incomplete,
+        label=hourly_label
+    )
+    return timeline, minutely, hourly
