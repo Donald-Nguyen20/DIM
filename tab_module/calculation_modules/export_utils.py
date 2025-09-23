@@ -63,11 +63,11 @@ def minutely_to_hourly_avg(minutely_df: pd.DataFrame,
             left, right = hour - one_hour, hour       # (HH-1:00, HH]
 
         # CẮT CỬA SỔ BAO GỒM CẢ HAI BIÊN: [left, right]
-        window = s.loc[left:right]
+        window = s.loc[left:right-dt]
 
         # Nếu cần “đủ mẫu” theo bước freq (ví dụ "T"): kỳ vọng = 1H/dt + 1 (gồm cả 2 biên)
         if drop_incomplete:
-            expected_ticks = int(pd.Timedelta("1H") / dt) + 1
+            expected_ticks = int(pd.Timedelta("1H") / dt) 
             if len(window) < expected_ticks:
                 continue
 

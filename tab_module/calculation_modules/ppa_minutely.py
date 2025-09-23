@@ -6,31 +6,27 @@ from typing import List, Optional, Tuple
 def ppa_segments_to_minutely(
     segments: List[pd.DataFrame],
     freq: str = "T",                   # "T" = 1 phút; ví dụ "30S", "5T"...
-    include_pair_idx: bool = False,    # gắn pair_idx cho từng mốc phút
-    include_edge_minutes: bool = True, # thêm mốc phút trùng EXACT với event trong segment
-    eps: float = 1e-6,                 # nhận diện flat: |m1 - m0| <= eps
-    gap_policy: str = "none",          # "none" | "nan" | "ffill" | "bridge_linear"
+    include_pair_idx: bool = False,    # gắn pair_idx cho từng mốc phút (ở đây sẽ trả theo pair nếu bật)
+    include_edge_minutes: bool = True, # (không còn ảnh hưởng trong mode tích phân, giữ để tương thích)
+    eps: float = 1e-6,                 # (giữ nguyên chữ ký)
+    gap_policy: str = "none",          # "none" | "nan" (giữ lại các lựa chọn an toàn)
 ) -> pd.DataFrame:
     """
-    Chuyển các segments (đã CUT/SNAP) thành chuỗi phút theo tần suất 'freq'.
+    Chuyển các segments (đã UNIVERSAL CUT) thành chuỗi phút time-weighted theo 'freq'.
 
-    NGUYÊN TẮC CHÍNH (NO-BRIDGE):
-      - Bên trong MỖI segment:
-          * HOLD (m1≈m0): giữ phẳng.
-          * RAMP: nội suy tuyến tính theo CHÍNH 2 mốc của segment.
-      - GIỮA HAI segment (khoảng trống/gap): mặc định KHÔNG sinh dữ liệu.
-        Có thể bật qua 'gap_policy':
-          * "none"          : không tạo điểm trong gap.
-          * "nan"           : tạo điểm phút trong gap với MW = NaN.
-          * "ffill"         : tạo điểm phút trong gap và điền MW = MW cuối của segment trước.
-          * "bridge_linear" : nội suy tuyến tính từ (t_end,m_end) -> (t_start_next,m_start_next).
+    Quy tắc:
+      - Binning LPRO: mỗi phút là [mm:00, mm+Δ) -> điểm đúng mm+Δ thuộc phút sau, tránh double-count.
+      - Trong từng phút, chèn mọi mốc event rơi bên trong rồi tích phân theo đoạn:
+            MW_minute = (1/Δ) * Σ (dt_i * (MW(t_i)+MW(t_{i+1}))/2)
+      - Nếu phút giao nhiều segment: cộng dồn diện tích các phần rồi chia Δ.
 
-    Ghi chú:
-      - Nếu hai segment CHẠM BIÊN (t_end == t_start_next) → không có gap.
-      - Nếu một mốc event trùng phút, tick ở biên sẽ thuộc segment tương ứng,
-        không để gap lấn vào (đã xử lý biên trái/phải cho an toàn).
+    Lưu ý:
+      - include_pair_idx=True: trả giá trị theo từng pair (một phút có thể có nhiều hàng với pair khác nhau).
+      - gap_policy:
+          * "none": chỉ sinh những phút có giao với ít nhất một segment.
+          * "nan" : sinh đủ dải phút liên tục từ min_start đến max_end; phút không giao = NaN.
     """
-    # ---------- Helpers ----------
+    # ---------- Helpers giữ nguyên tên ----------
     def _floor_tick(ts: pd.Timestamp, f: str) -> pd.Timestamp:
         return pd.to_datetime(ts).floor(f)
 
@@ -51,52 +47,34 @@ def ppa_segments_to_minutely(
         s = s.dropna(subset=["Thời điểm", "MW"]).sort_values("Thời điểm").reset_index(drop=True)
         return s if len(s) >= 2 else None
 
-    def _interp_segment(times: List[pd.Timestamp], mws: List[float], ticks: List[pd.Timestamp]) -> List[Tuple[pd.Timestamp, float]]:
-        """Nội suy ticks CHỈ dựa vào timeline của 1 segment."""
-        out = []
-        if len(times) < 2 or not ticks:
-            return out
-        k = 0
-        for tick in ticks:
-            while k + 1 < len(times) and tick > times[k+1]:
-                k += 1
-            if k + 1 >= len(times):
-                break
-            t0, t1 = times[k], times[k+1]
-            m0, m1 = mws[k],  mws[k+1]
-            if tick < t0:
-                val = m0
+    # Nội suy giá trị tại đúng thời điểm bên trong 1 segment (ramp tuyến tính / hold phẳng)
+    def _value_at_in_segment(ts: pd.Timestamp, times: List[pd.Timestamp], mws: List[float]) -> float:
+        if ts <= times[0]:
+            return float(mws[0])
+        if ts >= times[-1]:
+            return float(mws[-1])
+        # tìm [k, k+1] sao cho times[k] <= ts <= times[k+1]
+        lo, hi = 0, len(times) - 1
+        while lo + 1 < hi:
+            mid = (lo + hi) // 2
+            if times[mid] <= ts:
+                lo = mid
             else:
-                dur = (t1 - t0).total_seconds()
-                if dur <= 0:
-                    val = m1
-                elif abs(m1 - m0) <= eps:     # HOLD phẳng
-                    val = m0 if tick < t1 else m1
-                else:                          # RAMP tuyến tính
-                    frac = (tick - t0).total_seconds() / dur
-                    if frac < 0: frac = 0.0
-                    if frac > 1: frac = 1.0
-                    val = m0 + (m1 - m0) * frac
-            out.append((tick, float(val)))
-        return out
+                hi = mid
+        t0, t1 = times[lo], times[lo+1]
+        m0, m1 = float(mws[lo]), float(mws[lo+1])
+        dur = (t1 - t0).total_seconds()
+        if dur <= 0:
+            return m1
+        if abs(m1 - m0) <= eps:  # hold phẳng
+            return m0
+        frac = (ts - t0).total_seconds() / dur
+        if frac < 0: frac = 0.0
+        if frac > 1: frac = 1.0
+        return m0 + (m1 - m0) * frac
 
-    def _gap_ticks(t_end: pd.Timestamp, t_start_next: pd.Timestamp, f: str) -> List[pd.Timestamp]:
-        """Sinh ticks trong gap (loại trừ chồng biên với 2 segment)."""
-        off = _freq_offset(f)
-        # Bên trái: nếu t_end trùng phút → bắt đầu từ t_end + off
-        left = _ceil_tick(t_end, f)
-        if _floor_tick(t_end, f) == t_end:
-            left = t_end + off
-        # Bên phải: nếu t_start_next trùng phút → kết thúc ở t_start_next - off
-        right = _floor_tick(t_start_next, f)
-        if _floor_tick(t_start_next, f) == t_start_next:
-            right = t_start_next - off
-        if right < left:
-            return []
-        return list(pd.date_range(start=left, end=right, freq=f))
-
-    # ---------- Chuẩn hóa toàn bộ segments ----------
-    norm = []
+    # ---------- Chuẩn hóa segments ----------
+    norm: List[Tuple[int, pd.DataFrame, pd.Timestamp, pd.Timestamp]] = []
     for i, seg in enumerate(segments):
         s = _normalize_segment(seg)
         if s is None:
@@ -104,92 +82,107 @@ def ppa_segments_to_minutely(
         t0, t1 = s["Thời điểm"].iloc[0], s["Thời điểm"].iloc[-1]
         norm.append((i, s, t0, t1))
 
+    cols = ["pair_idx", "Thời điểm", "MW"] if include_pair_idx else ["Thời điểm", "MW"]
     if not norm:
-        cols = ["pair_idx", "Thời điểm", "MW"] if include_pair_idx else ["Thời điểm", "MW"]
         return pd.DataFrame(columns=cols)
 
-    # Bảo toàn thứ tự input (pair_idx tăng dần)
-    rows: List[Tuple] = []
+    # ---------- Khung thời gian & bins phút ----------
+    step = _freq_offset(freq)
+    global_start = min(t0 for _,_,t0,_ in norm)
+    global_end   = max(t1 for _,_,_,t1 in norm)
+    # Danh sách đầu phút toàn cục để phục vụ gap_policy="nan"
+    minute_starts_all = list(pd.date_range(start=_floor_tick(global_start, freq),
+                                           end=_floor_tick(global_end, freq),
+                                           freq=freq))
+    width_sec = int(pd.to_timedelta(step).total_seconds())
 
-    # ---------- Lấy mẫu phút TRONG từng segment ----------
-    for i, s, t0, t1 in norm:
-        start_tick = _ceil_tick(t0, freq)
-        end_tick   = _floor_tick(t1, freq)
-        ticks = list(pd.date_range(start=start_tick, end=end_tick, freq=freq)) if end_tick >= start_tick else []
-
-        if include_edge_minutes:
-            # chỉ thêm các event trùng EXACT mốc phút, và phải nằm trong phạm vi segment
-            edges = [t for t in s["Thời điểm"].tolist() if _floor_tick(t, freq) == t and t0 <= t <= t1]
-            ticks = sorted(set(ticks + edges))
-
-        times = s["Thời điểm"].tolist()
-        mws   = s["MW"].astype(float).tolist()
-        interp = _interp_segment(times, mws, ticks)
-
-        if include_pair_idx:
-            rows += [(i, t, v) for (t, v) in interp]
-        else:
-            rows += [(t, v) for (t, v) in interp]
-
-    # ---------- Xử lý GAP giữa các segment (tùy chọn) ----------
-    gp = (gap_policy or "none").lower()
-    if gp not in {"none", "nan", "ffill", "bridge_linear"}:
-        gp = "none"
-
-    if gp != "none":
-        for k in range(len(norm) - 1):
-            i, s_i, t0_i, t1_i = norm[k]
-            j, s_j, t0_j, t1_j = norm[k+1]
-            # Chỉ là gap khi t1_i < t0_j
-            if not (t1_i < t0_j):
-                continue
-
-            ticks_gap = _gap_ticks(t1_i, t0_j, freq)
-            if not ticks_gap:
-                continue
-
-            if gp == "nan":
-                if include_pair_idx:
-                    rows += [(i, t, math.nan) for t in ticks_gap]
-                else:
-                    rows += [(t, math.nan) for t in ticks_gap]
-
-            elif gp == "ffill":
-                mw_last = float(s_i["MW"].iloc[-1])
-                if include_pair_idx:
-                    rows += [(i, t, mw_last) for t in ticks_gap]
-                else:
-                    rows += [(t, mw_last) for t in ticks_gap]
-
-            elif gp == "bridge_linear":
-                tL, mL = s_i["Thời điểm"].iloc[-1], float(s_i["MW"].iloc[-1])
-                tR, mR = s_j["Thời điểm"].iloc[0],  float(s_j["MW"].iloc[0])
-                dur = (tR - tL).total_seconds()
-                for t in ticks_gap:
-                    if dur <= 0:
-                        val = mL
-                    else:
-                        frac = (t - tL).total_seconds() / dur
-                        if frac < 0: frac = 0.0
-                        if frac > 1: frac = 1.0
-                        val = mL + (mR - mL) * frac
-                    if include_pair_idx:
-                        rows.append((i, t, float(val)))  # gán về pair trước theo quy ước cũ
-                    else:
-                        rows.append((t, float(val)))
-
-    # ---------- Trả kết quả ----------
-    cols = ["pair_idx", "Thời điểm", "MW"] if include_pair_idx else ["Thời điểm", "MW"]
-    out = pd.DataFrame(rows, columns=cols)
-    if out.empty:
-        return out
+    # ---------- Tích phân theo phút ----------
+    from collections import defaultdict
 
     if include_pair_idx:
+        # tích phân riêng cho từng pair
+        acc_pair = defaultdict(float)  # key=(pair_idx, minute_start) -> area (MW*sec)
+        for i, s, seg_start, seg_end in norm:
+            times = s["Thời điểm"].tolist()
+            mws   = s["MW"].astype(float).tolist()
+
+            m_cur = _floor_tick(seg_start, freq)
+            m_last = _floor_tick(seg_end, freq)
+            while m_cur <= m_last:
+                m_start = m_cur
+                m_end   = m_cur + step
+                # phần giao thật sự
+                a = max(m_start, seg_start)
+                b = min(m_end, seg_end)
+                if b > a:
+                    # breakpoints trong (a,b): mọi mốc event của segment
+                    events_inside = [t for t in times if (a < t < b)]
+                    B = [a] + sorted(events_inside) + [b]
+                    area = 0.0
+                    for x, y in zip(B[:-1], B[1:]):
+                        v0 = _value_at_in_segment(x, times, mws)
+                        v1 = _value_at_in_segment(y, times, mws)
+                        dt = (y - x).total_seconds()
+                        area += dt * 0.5 * (v0 + v1)
+                    acc_pair[(i, m_start)] += area
+                m_cur = m_cur + step
+
+        rows = []
+        if (gap_policy or "none").lower() == "nan":
+            # sinh đủ phút theo từng pair xuất hiện
+            # (để đơn giản và an toàn: chỉ sinh phút có vùng segment cho pair đó;
+            #  nếu muốn sinh full nan cho mọi phút giữa min/max toàn cục per pair, cần track min/max theo pair)
+            for (i, m), area in sorted(acc_pair.items()):
+                rows.append((i, m, float(area / width_sec)))
+        else:
+            for (i, m), area in sorted(acc_pair.items()):
+                rows.append((i, m, float(area / width_sec)))
+
+        out = pd.DataFrame(rows, columns=["pair_idx", "Thời điểm", "MW"])
+        # bảo toàn 1 hàng / (pair_idx, Thời điểm)
         out = (out.sort_values(["pair_idx", "Thời điểm"])
-                 .drop_duplicates(subset=["pair_idx", "Thời điểm"], keep="last")
-                 .reset_index(drop=True))
+                  .drop_duplicates(subset=["pair_idx", "Thời điểm"], keep="last")
+                  .reset_index(drop=True))
+        return out
+
     else:
+        # tích phân gộp (không theo pair)
+        acc = defaultdict(float)  # key=minute_start -> area (MW*sec)
+        for _, s, seg_start, seg_end in norm:
+            times = s["Thời điểm"].tolist()
+            mws   = s["MW"].astype(float).tolist()
+
+            m_cur = _floor_tick(seg_start, freq)
+            m_last = _floor_tick(seg_end, freq)
+            while m_cur <= m_last:
+                m_start = m_cur
+                m_end   = m_cur + step
+                a = max(m_start, seg_start)
+                b = min(m_end, seg_end)
+                if b > a:
+                    events_inside = [t for t in times if (a < t < b)]
+                    B = [a] + sorted(events_inside) + [b]
+                    area = 0.0
+                    for x, y in zip(B[:-1], B[1:]):
+                        v0 = _value_at_in_segment(x, times, mws)
+                        v1 = _value_at_in_segment(y, times, mws)
+                        dt = (y - x).total_seconds()
+                        area += dt * 0.5 * (v0 + v1)
+                    acc[m_start] += area
+                m_cur = m_cur + step
+
+        rows = []
+        if (gap_policy or "none").lower() == "nan":
+            for m in minute_starts_all:
+                mw = (acc[m] / width_sec) if m in acc else float("nan")
+                rows.append((m, float(mw)))
+        else:
+            for m, area in sorted(acc.items()):
+                rows.append((m, float(area / width_sec)))
+
+        out = pd.DataFrame(rows, columns=["Thời điểm", "MW"])
         out = (out.sort_values("Thời điểm")
-                 .drop_duplicates(subset=["Thời điểm"], keep="last")
-                 .reset_index(drop=True))
-    return out
+                  .drop_duplicates(subset=["Thời điểm"], keep="last")
+                  .reset_index(drop=True))
+        return out
+
