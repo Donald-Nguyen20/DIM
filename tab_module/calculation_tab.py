@@ -13,13 +13,38 @@ from tab_module.calculation_modules.epc_calculation import build_epc_per_pair  #
 from tab_module.calculation_modules.plot_ppa import draw_ppa_df  # hỗ trợ tuple (segments, summary)
 from tab_module.calculation_modules.ppa_minutely import ppa_segments_to_minutely
 from tab_module.calculation_modules.df_inventory import collect_available_dataframes, summarize_df_dict
+from openpyxl.utils import get_column_letter
+from datetime import datetime, date, time
 
 # export phút + giờ trong 1 sheet
 from tab_module.calculation_modules.export_utils import (
-    export_ppa_minutely_and_hourly_to_excel,
     minutely_to_hourly_avg,   # <<< dùng để tính hourly cho dashboard
 )
+def _autofit_columns(ws, datetime_min_width: int = 19, base_margin: int = 1):
+    """Auto-fit độ rộng cột vừa đủ theo nội dung dài nhất."""
+    for col_idx, col_cells in enumerate(
+        ws.iter_cols(min_row=1, max_row=ws.max_row,
+                     min_col=1, max_col=ws.max_column),
+        start=1
+    ):
+        max_len = 0
+        is_dt = False
+        for cell in col_cells:
+            v = cell.value
+            if v is None:
+                continue
+            if isinstance(v, (datetime, date, time)):
+                is_dt = True
+                l = len(str(v))   # giữ đúng độ dài chuỗi thời gian
+            else:
+                l = len(str(v))
+            max_len = max(max_len, l)
 
+        width = max_len + base_margin  # bỏ nhân 1.2, chỉ cộng chút margin
+        if is_dt:
+            width = max(width, datetime_min_width)
+
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(8, width)
 class CalculationTab(QWidget):
     def __init__(self, main_window_ref=None):
         super().__init__()
@@ -222,7 +247,7 @@ class CalculationTab(QWidget):
 
         b = b.dropna(subset=["Thời điểm"]).sort_values("Thời điểm")
         s = s.dropna(subset=["Thời điểm"]).sort_values("Thời điểm")
-        s = s.drop_duplicates(subset=["Thời điểm"], keep="last")
+        s = s.drop_duplicates(subset=["Thời điểm"], keep="first")
 
         merged = b.merge(
             s.rename(columns={"MW": "MW_startup"}),
@@ -422,8 +447,13 @@ class CalculationTab(QWidget):
                     df = df_map.get(k)
                     if df is None or df.empty:
                         continue
-                    safe_sheet = k[:31]  # giới hạn tên sheet Excel
+                    safe_sheet = k[:31]
                     df.to_excel(writer, sheet_name=safe_sheet, index=False)
+
+                    # Lấy worksheet và auto-fit cột
+                    ws = writer.sheets[safe_sheet]
+                    _autofit_columns(ws)
+                    
             QMessageBox.information(self, "Hoàn tất", f"Đã lưu file:\n{path}")
         except PermissionError:
             QMessageBox.critical(self, "Không thể ghi file",

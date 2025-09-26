@@ -98,75 +98,10 @@ def minutely_to_hourly_avg(minutely_df: pd.DataFrame,
     return out
 
 
-# ========= Helper: reorder cột để "Thời điểm","MW" lên đầu =========
-def _reorder(df: pd.DataFrame) -> pd.DataFrame:
-    cols = list(df.columns)
-    pref = [c for c in ["Thời điểm", "MW"] if c in cols]
-    rest = [c for c in cols if c not in pref]
-    return df[pref + rest]
-
-# ========= Ghi CẢ phút + giờ =========
-def export_ppa_minutely_to_excel(df_s1: pd.DataFrame,
-                                 df_s2: pd.DataFrame,
-                                 filepath: str,
-                                 sheet_name: str = "PPA",
-                                 freq: str = "T",
-                                 drop_incomplete: bool = True,
-                                 label: str = "right"):
-    """
-    Ghi S1/S2 phút và giờ trong cùng 1 sheet:
-      - Phút:
-          S1 -> A2 (A,B,...) ; S2 -> D2 (D,E,...)
-      - Giờ (trung bình theo giờ, label='left' => nhãn đầu giờ; label='right' => nhãn cuối giờ):
-          S1 -> G2 (G: Thời điểm, H: MW/MWh)
-          S2 -> J2 (J: Thời điểm, K: MW/MWh)
-    """
-    # Chuẩn hóa phút
-    df_s1_min = _reorder(df_s1.copy()) if df_s1 is not None else pd.DataFrame(columns=["Thời điểm","MW"])
-    df_s2_min = _reorder(df_s2.copy()) if df_s2 is not None else pd.DataFrame(columns=["Thời điểm","MW"])
-
-    # Tính giờ từ phút (TRUYỀN label xuống hàm tính)
-    df_s1_hr = _reorder(minutely_to_hourly_avg(
-        df_s1_min, freq=freq, drop_incomplete=drop_incomplete, label=label
-    ))
-    df_s2_hr = _reorder(minutely_to_hourly_avg(
-        df_s2_min, freq=freq, drop_incomplete=drop_incomplete, label=label
-    ))
-
-    # Ghi Excel
-    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
-        # ----- Blocks phút -----
-        df_s1_min.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, startcol=0)  # A2
-        df_s2_min.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, startcol=3)  # D2
-
-        # ----- Blocks giờ -----
-        df_s1_hr.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, startcol=6)   # G2
-        df_s2_hr.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, startcol=9)   # J2
-
-        # ----- Nhãn hàng 1 cho 4 block -----
-        ws = writer.book[sheet_name]
-        ws.cell(row=1, column=1,  value="S1 (minutely)")                # A1
-        ws.cell(row=1, column=4,  value="S2 (minutely)")                # D1
-        ws.cell(row=1, column=7,  value=f"S1 (hourly avg, {label})")    # G1
-        ws.cell(row=1, column=10, value=f"S2 (hourly avg, {label})")    # J1
 
 
 # ========= Alias: tham số tường minh =========
-def export_ppa_minutely_and_hourly_to_excel(df_s1_minutely: pd.DataFrame,
-                                            df_s2_minutely: pd.DataFrame,
-                                            filepath: str,
-                                            sheet_name: str = "PPA",
-                                            freq: str = "T",
-                                            drop_incomplete: bool = True):
-    """Alias tường minh."""
-    return export_ppa_minutely_to_excel(
-        df_s1=df_s1_minutely,
-        df_s2=df_s2_minutely,
-        filepath=filepath,
-        sheet_name=sheet_name,
-        freq=freq,
-        drop_incomplete=drop_incomplete
-    )
+
 
 # export_utils.py
 # import pandas as pd

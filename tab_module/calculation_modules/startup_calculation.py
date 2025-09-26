@@ -254,6 +254,43 @@ def _last_bdth_in_window_raw(dfi: pd.DataFrame) -> Optional[pd.Timestamp]:
     t = pd.to_datetime(dfi.iloc[-1]["Thời điểm BĐTH"], errors="coerce", dayfirst=True)
     return None if pd.isna(t) else t
 
+def _get_40_50_window_end(df_startup: pd.DataFrame,
+                          t40_time: pd.Timestamp,
+                          t_cmd_start: Optional[pd.Timestamp]) -> tuple[Optional[pd.Timestamp], Optional[float]]:
+    """
+    Tìm DÒNG CUỐI trong cửa sổ 40%→50% theo BĐTH:
+      - time cửa sổ: (t40_time, t_cmd_start) nếu có t_cmd_start, ngược lại: lấy mọi dòng sau t40.
+      - MW lấy ưu tiên 'CS hoàn thành (MW)', fallback 'CS ra lệnh (MW)'.
+    Trả về: (t_end_bdth, mw_end_40_50)
+    """
+    if t40_time is None:
+        return None, None
+
+    dfi = df_startup.copy()
+    t_bd = pd.to_datetime(dfi.get("Thời điểm BĐTH"), errors="coerce", dayfirst=True)
+    dfi["_t_bd"] = t_bd
+
+    # lọc các lệnh nằm SAU 40% và (nếu có) TRƯỚC BĐTH của lệnh kế tiếp
+    m = dfi["_t_bd"] > t40_time
+    if t_cmd_start is not None:
+        m &= (dfi["_t_bd"] < t_cmd_start)
+
+    cand = dfi[m].dropna(subset=["_t_bd"]).sort_values("_t_bd")
+    if cand.empty:
+        return None, None
+
+    last = cand.iloc[-1]
+    t_end = last["_t_bd"]
+
+    mw_end = None
+    for col in ["CS hoàn thành (MW)", "CS ra lệnh (MW)"]:
+        if col in cand.columns:
+            v = pd.to_numeric(last.get(col), errors="coerce")
+            if pd.notna(v):
+                mw_end = float(v)
+                break
+
+    return (t_end if pd.notna(t_end) else None), mw_end
 
 
 def build_startup_timeline(
@@ -368,36 +405,53 @@ def build_startup_timeline(
         rows_extra.append({
             "Unit": unit,
             "Type": stype,
-            "Phase": "BĐTH (dòng cuối cửa sổ)",
+            "Phase": "Completed minload",
             "Δt_min_abs": round(float(dt_abs), 2),
             "Time": ins_time,      # giữ nguyên timestamp (có thể chỉ cộng/trừ 1 giây nếu cần)
             "MW": 264.0,
         })
 
 
-    # 5) RAMP/HOLD sau 40%
+    # 5) RAMP/HOLD sau 40% (theo rule mới)
     ramp40 = _get_after40_ramp_df(stype)
     t_curr_abs = start_after40_abs
     mw_curr    = mw_40
 
+    # Lấy "mốc end 40–50" theo BĐTH (nếu có)
+    t_end_bdth, mw_end_40_50 = _get_40_50_window_end(df_startup, t40_time, t_cmd_start)
+
     if not ramp40.empty:
-        # 5.1 Ramp 40% → min(50%, đích)
-        rate1   = float(ramp40.iloc[0]["MW_per_min"])
-        end1_mw = min(mw_50, mw_target)
+        # === 5.1 Ramp 40% → (end 40–50 theo BĐTH) hoặc fallback cũ ===
+        rate1 = float(ramp40.iloc[0]["MW_per_min"])
+        if mw_end_40_50 is None:
+            # fallback: nếu không có mốc end từ BĐTH, dùng logic cũ
+            end1_mw = min(mw_50, mw_target)
+        else:
+            end1_mw = float(mw_end_40_50)   # CHỐT = dòng cuối cửa sổ BĐTH
+
         if rate1 > 0 and end1_mw > mw_curr:
-            t_need    = (end1_mw - mw_curr) / rate1
+            t_need     = (end1_mw - mw_curr) / rate1
             t_curr_abs = start_after40_abs + t_need
             mw_curr    = end1_mw
             rows_extra.append({
-                "Unit": unit, "Type": stype, "Phase": "40%→50% (end)",
+                "Unit": unit, "Type": stype, "Phase": "Load change after start-up",
                 "Δt_min_abs": round(t_curr_abs, 2),
                 "Time": t_start + pd.Timedelta(minutes=t_curr_abs),
                 "MW": round(mw_curr, 3),
             })
 
-        # 5.2 Hold @50% (chỉ khi còn đi tiếp lên >50%)
+        # === 5.2 Hold@50% (chỉ khi END của 40–50 > 50%) ===
         hold_row = ramp40[ramp40["Stage"] == _STAGE_HOLD]
-        if (mw_target > mw_50) and (not hold_row.empty):
+        should_hold = False
+        if not hold_row.empty:
+            # Điều kiện đúng theo yêu cầu: chỉ hold khi "mốc end 40–50" > 50%
+            if mw_end_40_50 is not None:
+                should_hold = (mw_end_40_50 > mw_50)
+            else:
+                # nếu không có mốc end từ BĐTH, suy luận: chỉ hold khi sẽ còn đi lên >50%
+                should_hold = (mw_curr > mw_50) or (mw_target > mw_50)
+
+        if should_hold:
             hold_mins = float(hold_row["Hold_mins"].iloc[0])
             if hold_mins > 0:
                 t_curr_abs += hold_mins
@@ -408,18 +462,19 @@ def build_startup_timeline(
                     "MW": round(mw_curr, 3),
                 })
 
-        # 5.3 Ramp 50% → đích (nếu đích > mw_curr)
+        # === 5.3 Ramp tiếp từ điểm hiện tại → đích (nếu đích > mw_curr) ===
         rate2 = float(ramp40.iloc[-1]["MW_per_min"])
         if rate2 > 0 and mw_target > mw_curr:
-            t_need    = (mw_target - mw_curr) / rate2
+            t_need     = (mw_target - mw_curr) / rate2
             t_curr_abs += t_need
             mw_curr     = mw_target
             rows_extra.append({
-                "Unit": unit, "Type": stype, "Phase": "50%→100% (end)",  # giữ label cũ cho UI
+                "Unit": unit, "Type": stype, "Phase": "50%→100% (end)",
                 "Δt_min_abs": round(t_curr_abs, 2),
                 "Time": t_start + pd.Timedelta(minutes=t_curr_abs),
                 "MW": round(mw_curr, 3),
             })
+
 
     after40_df = pd.DataFrame(rows_extra, columns=["Unit","Type","Phase","Δt_min_abs","Time","MW"])
 

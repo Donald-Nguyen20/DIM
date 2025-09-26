@@ -29,15 +29,18 @@ class MainWindow(QMainWindow):
         self.DF1_CT = pd.DataFrame()   # Sub-Contract S1
         self.DF2_CT = pd.DataFrame()   # Sub-Contract S2
         # >>> THÊM (giá trị khởi tạo)
-        self.DF1_startup_timeline  = pd.DataFrame()
-        self.DF2_startup_timeline  = pd.DataFrame()
-        self.DF1_startup_minutely  = pd.DataFrame()
-        self.DF2_startup_minutely  = pd.DataFrame()
+        # self.DF1_startup_timeline  = pd.DataFrame()
+        # self.DF2_startup_timeline  = pd.DataFrame()
+        # self.DF1_startup_minutely  = pd.DataFrame()
+        # self.DF2_startup_minutely  = pd.DataFrame()
 
         self.DF1_shutdown_timeline  = pd.DataFrame()
         self.DF2_shutdown_timeline  = pd.DataFrame()
         self.DF1_shutdown_minutely  = pd.DataFrame()
         self.DF2_shutdown_minutely  = pd.DataFrame()
+        self.DF1_shutdown_minutely_T = pd.DataFrame()  # S1 phút (trung bình 60 giây)
+        self.DF2_shutdown_minutely_T = pd.DataFrame()  # S2 phút (trung bình 60 giây)
+
 
 
         # Layout chính
@@ -170,26 +173,57 @@ class MainWindow(QMainWindow):
 
             keep = []
             for i in idxs:
-                start = max(i - 2, 0)
+                start = max(i - 3, 0)
                 end   = min(i + 4, len(dfi_unit))  # i, i+1, i+2, i+3
                 keep.extend(range(start, end))
             keep = sorted(set(keep))
             return dfi_unit.loc[keep].reset_index(drop=True)
         def _first_shutdown_time(win: pd.DataFrame):
-            """Lấy đúng thời điểm của hàng có 'Ngừng tổ máy' trong window:
-            ưu tiên 'Thời điểm BĐTH', fallback 'Thời điểm hoàn thành'."""
+            """Trả (t_shutdown, pre_time_for_ramp, pre_mw)
+            - t_shutdown: thời điểm dòng match 'Ngừng tổ máy' (ưu tiên BĐTH, fallback 'Thời điểm hoàn thành')
+            - pre_time_for_ramp: = 'Thời điểm BĐTH' của chính dòng 'Ngừng tổ máy'
+            - pre_mw: MW của dòng NGAY TRƯỚC dòng 'Ngừng tổ máy'
+                    (ưu tiên 'CS hoàn thành (MW)', fallback 'CS ra lệnh (MW)')
+            """
             import re
             if win is None or win.empty or "Case" not in win.columns:
-                return None
+                return None, None, None
+
             pat = re.compile(r"ngừng tổ máy|dừng tổ máy|shutdown", re.IGNORECASE)
             m = win["Case"].astype(str).str.contains(pat, na=False)
             if not m.any():
-                return None
+                return None, None, None
+
             i = m.idxmax()  # hàng đầu tiên match trong window
-            t = pd.to_datetime(win.loc[i, "Thời điểm BĐTH"], errors="coerce", dayfirst=True)
-            if pd.isna(t):
-                t = pd.to_datetime(win.loc[i, "Thời điểm hoàn thành"], errors="coerce", dayfirst=True)
-            return None if pd.isna(t) else t
+
+            # 1) t_shutdown = mốc để log/hiển thị (ưu tiên BĐTH, fallback hoàn thành)
+            t_shutdown = pd.to_datetime(win.loc[i, "Thời điểm BĐTH"], errors="coerce", dayfirst=True)
+            if pd.isna(t_shutdown):
+                t_shutdown = pd.to_datetime(win.loc[i, "Thời điểm hoàn thành"], errors="coerce", dayfirst=True)
+            if pd.isna(t_shutdown):
+                return None, None, None
+
+            # 2) pre_time_for_ramp = BĐTH của dòng 'Ngừng tổ máy' (theo yêu cầu)
+            pre_time_for_ramp = pd.to_datetime(win.loc[i, "Thời điểm BĐTH"], errors="coerce", dayfirst=True)
+            if pd.isna(pre_time_for_ramp):
+                # nếu BĐTH trống, fallback t_shutdown (vẫn là time của dòng 'Ngừng tổ máy')
+                pre_time_for_ramp = t_shutdown
+
+            # 3) pre_mw = MW của dòng NGAY TRƯỚC
+            pre_mw = None
+            j = i - 1
+            if j in win.index:
+                pre_mw = pd.to_numeric(win.loc[j, "CS hoàn thành (MW)"], errors="coerce") if "CS hoàn thành (MW)" in win.columns else None
+                if (pre_mw is None or pd.isna(pre_mw)) and "CS ra lệnh (MW)" in win.columns:
+                    pre_mw = pd.to_numeric(win.loc[j, "CS ra lệnh (MW)"], errors="coerce")
+
+            return (
+                t_shutdown,
+                None if pre_time_for_ramp is None or pd.isna(pre_time_for_ramp) else pre_time_for_ramp,
+                None if pre_mw is None or pd.isna(pre_mw) else float(pre_mw),
+            )
+
+
 
 
         # === 3b) CỬA SỔ quanh 'Ngừng tổ máy' ===
@@ -208,8 +242,14 @@ class MainWindow(QMainWindow):
         print("\n=== Startup S2 (5 dòng quanh 'Khởi động lò') ===")
         print(self.DF2_STARTUP.head(10))
         # ===== SHUTDOWN: lấy mốc 'Ngừng tổ máy' làm t40 (bắt đầu profile 40%->0) =====
-        t40_s1 = _first_shutdown_time(self.DF1_SHUTDOWN)
-        t40_s2 = _first_shutdown_time(self.DF2_SHUTDOWN)
+        t40_s1, pre_t1, pre_mw1 = _first_shutdown_time(self.DF1_SHUTDOWN)
+        t40_s2, pre_t2, pre_mw2 = _first_shutdown_time(self.DF2_SHUTDOWN)
+        # SNAP mốc bắt đầu ramp về đầu phút kế tiếp
+        if pre_t1 is not None:
+            pre_t1 = pd.to_datetime(pre_t1)
+        if pre_t2 is not None:
+            pre_t2 = pd.to_datetime(pre_t2)
+
         print("\n=== SHUTDOWN Timestamps (mốc 'Ngừng tổ máy') ===")
         print("S1 t40:", t40_s1.strftime("%Y-%m-%d %H:%M:%S") if t40_s1 is not None else None)
         print("S2 t40:", t40_s2.strftime("%Y-%m-%d %H:%M:%S") if t40_s2 is not None else None)
@@ -240,6 +280,18 @@ class MainWindow(QMainWindow):
             include_edge_minutes=True,
             gap_policy="none"
         )
+        # --- CẮT CHUỖI PHÚT START-UP TỚI CẬN DƯỚI 40% (bỏ phút chứa 40%) ---
+        if not tl1.empty:
+            t40_1 = pd.to_datetime(tl1.loc[tl1["MW"].idxmax(), "Time"])
+            s1_min["Thời điểm"] = pd.to_datetime(s1_min["Thời điểm"], errors="coerce").dt.floor("T")
+            # giữ < phút sàn của 40% → phút trước mốc 40% là điểm cuối
+            s1_min = s1_min[s1_min["Thời điểm"] < t40_1.floor("T")].reset_index(drop=True)
+
+        if not tl2.empty:
+            t40_2 = pd.to_datetime(tl2.loc[tl2["MW"].idxmax(), "Time"])
+            s2_min["Thời điểm"] = pd.to_datetime(s2_min["Thời điểm"], errors="coerce").dt.floor("T")
+            s2_min = s2_min[s2_min["Thời điểm"] < t40_2.floor("T")].reset_index(drop=True)
+
 
         self.DF1_startup_timeline = tl1
         self.DF2_startup_timeline = tl2
@@ -284,22 +336,75 @@ class MainWindow(QMainWindow):
             df_s2.loc[1:, "Thời điểm hoàn thành"] = "0"
 
         if t40_s1 is not None:
-            sd1_tl, sd1_min = build_shutdown_minutely_from_t40(t40_s1, unit="S1", mw40=264.0)
+            sd1_tl, sd1_min = build_shutdown_minutely_from_t40(
+                t40_s1, unit="S1", mw40=264.0,
+                pre_time=pre_t1, pre_mw=pre_mw1,
+                pre_rate_mw_per_sec=0.22,      # 13.2 MW/phút
+                allow_ramp_up_if_below=False,
+                freq="s"                        # khuyến nghị: nội suy giây cho chuẩn năng lượng
+            )
+
+
             self.DF1_shutdown_timeline = sd1_tl
             self.DF1_shutdown_minutely = sd1_min
             print("\n=== SHUTDOWN S1 TIMELINE ===\n", sd1_tl)
             print("\n=== SHUTDOWN S1 MINUTELY (tail 100) ===\n", sd1_min.tail(100))
+            # Sau khi có sd2_min (per-second) từ build_shutdown_minutely_from_t40(...)
+            time_col = "Thời điểm" if "Thời điểm" in sd2_min.columns else "Time"
+            sd1_min[time_col] = pd.to_datetime(sd1_min[time_col], errors="coerce")
+
+            # Chỉ giữ các bản ghi có giây = 0 (đúng mốc tròn phút)
+            sd1_min = (
+                sd1_min.dropna(subset=[time_col])
+                    .loc[sd1_min[time_col].dt.second.eq(0)]
+                    .sort_values(time_col)
+                    .drop_duplicates(subset=[time_col], keep="last")
+                    .reset_index(drop=True)
+            )
+
+            # Ghi đè lại thuộc tính
+            self.DF1_shutdown_minutely = sd1_min
+
+            print("\n=== SHUTDOWN S1 MINUTELY (on-the-minute only) ===\n", sd1_min.head(100))
+
         else:
             self.DF1_shutdown_timeline = pd.DataFrame()
             self.DF1_shutdown_minutely = pd.DataFrame()
             print("\n[WARN] Không tìm thấy mốc 'Ngừng tổ máy' cho S1.")
 
+        # S2
         if t40_s2 is not None:
-            sd2_tl, sd2_min = build_shutdown_minutely_from_t40(t40_s2, unit="S2", mw40=264.0)
+            sd2_tl, sd2_min = build_shutdown_minutely_from_t40(
+                t40_s2, unit="S2", mw40=264.0,
+                pre_time=pre_t2, pre_mw=pre_mw2,
+                pre_rate_mw_per_sec=0.22,
+                allow_ramp_up_if_below=False,
+                freq="s"
+            )
+
+
             self.DF2_shutdown_timeline = sd2_tl
             self.DF2_shutdown_minutely = sd2_min
             print("\n=== SHUTDOWN S2 TIMELINE ===\n", sd2_tl)
-            print("\n=== SHUTDOWN S2 MINUTELY (tail 100) ===\n", sd2_min.tail(100))
+            print("\n=== SHUTDOWN S2 SECONDLY (head 100) ===\n", sd2_min.tail(1000))
+            # Sau khi có sd2_min (per-second) từ build_shutdown_minutely_from_t40(...)
+            time_col = "Thời điểm" if "Thời điểm" in sd2_min.columns else "Time"
+            sd2_min[time_col] = pd.to_datetime(sd2_min[time_col], errors="coerce")
+
+            # Chỉ giữ các bản ghi có giây = 0 (đúng mốc tròn phút)
+            sd2_min = (
+                sd2_min.dropna(subset=[time_col])
+                    .loc[sd2_min[time_col].dt.second.eq(0)]
+                    .sort_values(time_col)
+                    .drop_duplicates(subset=[time_col], keep="last")
+                    .reset_index(drop=True)
+            )
+
+            # Ghi đè lại thuộc tính
+            self.DF2_shutdown_minutely = sd2_min
+
+            print("\n=== SHUTDOWN S2 MINUTELY (on-the-minute only) ===\n", sd2_min.head(100))
+
         else:
             self.DF2_shutdown_timeline = pd.DataFrame()
             self.DF2_shutdown_minutely = pd.DataFrame()
